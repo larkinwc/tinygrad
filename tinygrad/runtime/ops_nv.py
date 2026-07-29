@@ -39,6 +39,10 @@ def nv_renderer_arch(sm_version:int) -> str:
   val = sm_version & 0xff
   return f"sm_{(sm_version>>8)&0xff}{(val>>4) if val > 0xf else val}"
 
+def nv_qmd_sass_version(sm_version:int) -> int:
+  if sm_version == nv_gpu.NV2080_CTRL_GR_INFO_SM_VERSION_8_02: return 0x80
+  return ((sm_version & 0xf00) >> 4) | (sm_version & 0xf)
+
 NV_PFAULT_FAULT_TYPE = {dt:name for name,dt in nv_gpu.__dict__.items() if name.startswith("NV_PFAULT_FAULT_TYPE_")}
 NV_PFAULT_ACCESS_TYPE = {dt:name.split("_")[-1] for name,dt in nv_gpu.__dict__.items() if name.startswith("NV_PFAULT_ACCESS_TYPE_")}
 
@@ -658,7 +662,7 @@ class NVDevice(HCQCompiled[NVSignal]):
       'num_tpc_per_gpc', 'num_sm_per_tpc', 'max_warps_per_sm', 'sm_version')
 
     self.arch = nv_renderer_arch(self.sm_version)
-    self.sass_version = ((self.sm_version & 0xf00) >> 4) | (self.sm_version & 0xf)
+    self.sass_version = nv_qmd_sass_version(self.sm_version)
 
     super().__init__(device, NVAllocator(self), [CUDARenderer, PTXRenderer, NVCCRenderer, NAKRenderer], NVProgram, NVSignal, NVComputeQueue,
                      NVComputeQueue if self.copy_on_compute_queue else NVCopyQueue, arch=self.arch)
@@ -797,7 +801,8 @@ class NVDevice(HCQCompiled[NVSignal]):
     # Prepare fault report.
     # TODO: Restore the GPU using NV83DE_CTRL_CMD_CLEAR_ALL_SM_ERROR_STATES if needed.
 
-    report, seen_gpfifos = [f"setup_stage={getattr(self, 'ga100_setup_stage', 'unknown')}"], set()
+    report, seen_gpfifos = [f"setup_stage={getattr(self, 'ga100_setup_stage', 'unknown')} arch={self.arch} "
+                            f"sm_version=0x{self.sm_version:X} sass_version=0x{self.sass_version:X}"], set()
     for name in ("compute_gpfifo", "dma_gpfifo"):
       if not hasattr(self, name) or id(gpfifo:=getattr(self, name)) in seen_gpfifos: continue
       seen_gpfifos.add(id(gpfifo))

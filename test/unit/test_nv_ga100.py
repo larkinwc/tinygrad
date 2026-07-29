@@ -97,6 +97,8 @@ def test_ga100_nvd_uses_sm80_renderer_target():
   assert ops_nv.nv_renderer_arch(0x806) == "sm_86"
   assert ops_nv.nv_renderer_arch(0x809) == "sm_89"
   assert ops_nv.nv_renderer_arch(0xA04) == "sm_120"
+  assert ops_nv.nv_qmd_sass_version(0x802) == 0x80
+  assert ops_nv.nv_qmd_sass_version(0x806) == 0x86
 
 
 def test_ga100_heap_scales_with_framebuffer_size():
