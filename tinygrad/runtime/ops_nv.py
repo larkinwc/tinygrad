@@ -370,6 +370,10 @@ class NVAllocator(HCQAllocator['NVDevice']):
 class GPFifo:
   ring: MMIOInterface
   gpput: MMIOInterface
+  gpget: MMIOInterface
+  error_notifier: HCQBuffer
+  error_notifier_base: int
+  error_notifier_size: int
   entries_count: int
   token: int
   put_value: int = 0
@@ -679,8 +683,11 @@ class NVDevice(HCQCompiled[NVSignal]):
       nv_gpu.NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN_PARAMS(workSubmitToken=-1))
     if ctxshare != 0: self.iface.setup_gpfifo_vm(gpfifo)
 
+    userd_base = offset + entries*8
     return GPFifo(ring=gpfifo_area.cpu_view().view(offset, entries*8, fmt='Q'), entries_count=entries, token=ws_token_params.workSubmitToken,
-                  gpput=gpfifo_area.cpu_view().view(offset + entries*8 + getattr(nv_gpu.AmpereAControlGPFifo, 'GPPut').offset, fmt='I'))
+                  gpput=gpfifo_area.cpu_view().view(userd_base + getattr(nv_gpu.AmpereAControlGPFifo, 'GPPut').offset, fmt='I'),
+                  gpget=gpfifo_area.cpu_view().view(userd_base + getattr(nv_gpu.AmpereAControlGPFifo, 'GPGet').offset, fmt='I'),
+                  error_notifier=notifier, error_notifier_base=params.errorNotifierMem.base, error_notifier_size=params.errorNotifierMem.size)
 
   def _query_gpu_info(self, *reqs):
     nvrs = [getattr(nv_gpu,'NV2080_CTRL_GR_INFO_INDEX_'+r.upper(), getattr(nv_gpu,'NV2080_CTRL_GR_INFO_INDEX_LITTER_'+r.upper(), None)) for r in reqs]
@@ -756,7 +763,14 @@ class NVDevice(HCQCompiled[NVSignal]):
     # Prepare fault report.
     # TODO: Restore the GPU using NV83DE_CTRL_CMD_CLEAR_ALL_SM_ERROR_STATES if needed.
 
-    report = []
+    report, seen_gpfifos = [], set()
+    for name in ("compute_gpfifo", "dma_gpfifo"):
+      if not hasattr(self, name) or id(gpfifo:=getattr(self, name)) in seen_gpfifos: continue
+      seen_gpfifos.add(id(gpfifo))
+      notifier = "unmapped" if gpfifo.error_notifier.view is None else \
+        bytes(gpfifo.error_notifier.cpu_view().view(size=min(gpfifo.error_notifier.size, 64), fmt='B')).hex()
+      report.append(f"{name}: GPGet={gpfifo.gpget[0]} GPPut={gpfifo.gpput[0]} SWPut={gpfifo.put_value} token=0x{gpfifo.token:X} "
+                    f"error_notifier=0x{gpfifo.error_notifier_base:X}+0x{gpfifo.error_notifier_size:X} data={notifier}")
     sm_errors = self.iface.rm_control(self.debugger, nv_gpu.NV83DE_CTRL_CMD_DEBUG_READ_ALL_SM_ERROR_STATES,
       nv_gpu.NV83DE_CTRL_DEBUG_READ_ALL_SM_ERROR_STATES_PARAMS(hTargetChannel=self.debug_channel, numSMsToRead=100))
 
