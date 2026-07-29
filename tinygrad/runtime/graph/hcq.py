@@ -105,13 +105,9 @@ class HCQGraph(MultiGraphRunner):
         enqueue_queue = self.comp_queues[enqueue_dev]
         rdma_key = (cast(HCQCompiled, Device[bufs[0].device]).rdma_dev(), enqueue_dev.rdma_dev())
         self.rdma_queues.setdefault(rdma_key, RDMACopyQueue(enqueue_dev.rdma_dev()))
-      elif getattr(enqueue_dev, "copy_on_compute_queue", False):
-        enqueue_queue, queue_idx = self.comp_queues[enqueue_dev], 0
       else:
-        assert (enqueue_dev.hw_copy_queue_t is not None), "device must implement a copy queue"
         queue_idx = self.devices.index(cast(HCQCompiled, Device[bufs[0].device])) % self.num_copy_queues
-        enqueue_queue = self.copy_queues.setdefault((enqueue_dev, queue_idx),
-          enqueue_dev.hw_copy_queue_t(queue_idx=queue_idx).wait(self.kick_signals[enqueue_dev.peer_group], self.kickoff_var))
+        enqueue_queue = self._copy_queue(enqueue_dev, queue_idx)
 
       out_signal = self.signals.setdefault(enqueue_queue, self.pg_dev[enqueue_dev.peer_group].new_signal(value=0))
 
@@ -259,6 +255,12 @@ class HCQGraph(MultiGraphRunner):
     for sig, val in opt_deps: self.ji_schedule[val - 1] = self.ji_schedule[val - 1][:5] + (val,)
 
     return sync_signals, opt_deps, rdeps
+
+  def _copy_queue(self, dev:HCQCompiled, queue_idx:int) -> HWQueue:
+    if getattr(dev, "copy_on_compute_queue", False): return self.comp_queues[dev]
+    assert dev.hw_copy_queue_t is not None, "device must implement a copy queue"
+    return self.copy_queues.setdefault((dev, queue_idx),
+      dev.hw_copy_queue_t(queue_idx=queue_idx).wait(self.kick_signals[dev.peer_group], self.kickoff_var))
 
   def _dev_copy_queues(self, dev): return [q for (d, _), q in self.copy_queues.items() if d == dev]
 

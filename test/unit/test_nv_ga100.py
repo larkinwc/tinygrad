@@ -129,6 +129,24 @@ def test_nvd_ga100_unifies_compute_and_dma_submission(chip_name, unified):
     assert events == [("fifo", 0xCF00000D, 0xCF00000C, 0, 0x10000, True),
                       ("fifo", 0xCF00000D, 0xCF00000C, 0x100000, 0x10000, False)]
 
+def test_unified_ga100_graph_copy_never_instantiates_copy_queue():
+  from tinygrad.runtime.graph.hcq import HCQGraph
+
+  class FakeDevice:
+    copy_on_compute_queue, peer_group = True, "NV"
+    def hw_copy_queue_t(self, *, queue_idx):
+      raise AssertionError(f"copy queue {queue_idx} must not be instantiated")
+
+  dev, compute_queue = FakeDevice(), object()
+  graph = HCQGraph.__new__(HCQGraph)
+  graph.comp_queues, graph.copy_queues = {dev: compute_queue}, {}
+  graph.kick_signals, graph.kickoff_var = {}, object()
+  graph.devices, graph.kickoff_value, graph.kernargs_bufs = [], 0, {}
+
+  assert graph._copy_queue(dev, 0) is compute_queue
+  assert graph.copy_queues == {}
+
+
 def test_context_repromotion_reuses_buffers_without_allocating():
   mapping = SimpleNamespace(va_addr=0x100200000, paddrs=[(0x80000000, 0x20000)])
   controls = []
