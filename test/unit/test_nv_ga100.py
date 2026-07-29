@@ -105,6 +105,25 @@ def test_ga100_nvd_uses_sm80_renderer_target():
     nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE
 
 
+def test_program_snapshot_reads_resident_vram_image():
+  resident = bytearray(0x1000)
+  program = bytes(range(0x80))
+  resident[0x300:0x380] = program
+  mapping = SimpleNamespace(aspace=ops_nv.AddrSpace.PHYS, paddrs=[(0x100, 0x800)])
+  prg = SimpleNamespace(program_address=0x1200, program_image=program,
+                        lib_gpu=SimpleNamespace(va_addr=0x1000, meta=SimpleNamespace(mapping=mapping)),
+                        dev=SimpleNamespace(iface=SimpleNamespace(dev_impl=SimpleNamespace(
+                          vram=SimpleNamespace(view=lambda off, size, fmt: memoryview(resident)[off:off+size])))))
+
+  snapshot = ops_nv.nv_program_snapshot(prg)
+
+  assert snapshot["address"] == 0x1200
+  assert snapshot["size"] == 0x80
+  assert snapshot["address_space"] == "PHYS"
+  assert snapshot["resident_status"] == "match"
+  assert snapshot["resident"] == program.hex()
+  assert snapshot["resident_sha256"] == snapshot["expected_sha256"]
+
 def test_qmd_snapshot_captures_launch_and_release_contract():
   dev = SimpleNamespace(iface=SimpleNamespace(compute_class=nv_gpu.AMPERE_COMPUTE_A))
   qmd = ops_nv.QMD(dev, qmd_major_version=3, sass_version=0x82, program_address_upper=0x10,

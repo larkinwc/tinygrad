@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, ctypes, contextlib, re, functools, mmap, struct, array, sys, weakref
+import os, ctypes, contextlib, re, functools, mmap, struct, array, sys, weakref, hashlib
 assert sys.platform != 'win32'
 from typing import cast
 from dataclasses import dataclass, field
@@ -58,6 +58,27 @@ def nv_gr_ctx_buffer_snapshot(params) -> list[dict[str, int]]:
            "phys_addr": int(info.physAddr), "aperture": int(info.aperture), "page_size": int(info.pageSize), "page_count": int(info.pageCount),
            "contiguous": int(info.bIsContigous), "global": int(info.bGlobalBuffer), "local": int(info.bLocalBuffer),
            "device_descendant": int(info.bDeviceDescendant)} for info in params.ctxBufferInfo[:params.bufferCount]]
+
+def nv_program_snapshot(prg) -> dict[str, int|str|bool]:
+  mapping, expected = prg.lib_gpu.meta.mapping, prg.program_image
+  snapshot = {"address": int(prg.program_address), "size": len(expected), "address_space": mapping.aspace.name,
+              "expected_sha256": hashlib.sha256(expected).hexdigest(), "expected": expected.hex()}
+  if mapping.aspace is not AddrSpace.PHYS: return snapshot | {"resident_status": "not_vram"}
+
+  logical_offset, remaining, resident = prg.program_address - prg.lib_gpu.va_addr, len(expected), bytearray()
+  for paddr, physical_size in mapping.paddrs:
+    if logical_offset >= physical_size:
+      logical_offset -= physical_size
+      continue
+    take = min(remaining, physical_size - logical_offset)
+    resident.extend(bytes(prg.dev.iface.dev_impl.vram.view(paddr + logical_offset, take, fmt='B')))
+    remaining, logical_offset = remaining - take, 0
+    if remaining == 0: break
+  if remaining: return snapshot | {"resident_status": f"short_read:{len(expected) - remaining}"}
+
+  resident_bytes = bytes(resident)
+  return snapshot | {"resident_status": "match" if resident_bytes == expected else "mismatch",
+                     "resident_sha256": hashlib.sha256(resident_bytes).hexdigest(), "resident": resident_bytes.hex()}
 
 def nv_iowr(fd:FileIOInterface, nr, args, cmd=None):
   ret = fd.ioctl(cmd or ((3 << 30) | (ctypes.sizeof(args) & 0x1FFF) << 16 | (ord('F') & 0xFF) << 8 | (nr & 0xFF)), args)
@@ -131,6 +152,7 @@ class QMD:
 class NVCommandQueue(HWQueue[HCQSignal, 'NVDevice', 'NVProgram', 'NVArgsState']):
   def __init__(self):
     self.active_qmd = None
+    self.active_program = None
     super().__init__()
 
   def __del__(self):
@@ -173,7 +195,10 @@ class NVCommandQueue(HWQueue[HCQSignal, 'NVDevice', 'NVProgram', 'NVArgsState'])
 
     if dev.copy_on_compute_queue:
       submission = {"cmdq_addr": f"0x{int(cmdq_addr):X}", "words": [f"0x{int(self._q[i]):08X}" for i in range(min(len(self._q), 128))]}
-      if self.active_qmd is not None: submission["qmd"] = self.active_qmd.snapshot(self.active_qmd_buf.va_addr)
+      if self.active_qmd is not None:
+        submission["qmd"] = self.active_qmd.snapshot(self.active_qmd_buf.va_addr)
+        try: submission["program"] = nv_program_snapshot(self.active_program)
+        except Exception as error: submission["program_error"] = f"{type(error).__name__}: {error}"
       gpfifo.submissions.append(submission)
     gpfifo.ring[gpfifo.put_value % gpfifo.entries_count] = (cmdq_addr//4 << 2) | (len(self._q) << 42) | (1 << 41)
     gpfifo.gpput[0] = (gpfifo.put_value + 1) % gpfifo.entries_count
@@ -220,7 +245,7 @@ class NVComputeQueue(NVCommandQueue):
     else:
       self.active_qmd.write(dependent_qmd0_pointer=qmd_buf.va_addr >> 8, dependent_qmd0_action=1, dependent_qmd0_prefetch=1, dependent_qmd0_enable=1)
 
-    self.active_qmd, self.active_qmd_buf = qmd, qmd_buf
+    self.active_qmd, self.active_qmd_buf, self.active_program = qmd, qmd_buf, prg
     return self
 
   def signal(self, signal:HCQSignal, value:sint=0):
@@ -349,6 +374,7 @@ class NVProgram(HCQProgram['NVDevice']):
       min_cbuf0_entries = 224 if dev.iface.compute_class >= nv_gpu.BLACKWELL_COMPUTE_A else 12
       self.cbuf_0 = [0] * max(cbuf0_size // 4, min_cbuf0_entries)
 
+    self.program_address, self.program_image = prog_addr, bytes(image)[prog_addr-self.lib_gpu.va_addr:prog_addr-self.lib_gpu.va_addr+prog_sz]
     # Ensure device has enough local memory to run the program
     self.dev._ensure_has_local_memory(self.lcmem_usage)
     self.dev.allocator._copyin(self.lib_gpu, image)
