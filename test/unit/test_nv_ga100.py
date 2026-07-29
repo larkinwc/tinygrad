@@ -101,6 +101,34 @@ def test_ga100_nvd_uses_sm80_renderer_target():
   assert ops_nv.nv_qmd_sass_version(0x806) == 0x86
 
 
+def test_qmd_snapshot_captures_launch_and_release_contract():
+  dev = SimpleNamespace(iface=SimpleNamespace(compute_class=nv_gpu.AMPERE_COMPUTE_A))
+  qmd = ops_nv.QMD(dev, qmd_major_version=3, sass_version=0x82, program_address_upper=0x10,
+                   program_address_lower=0x12340000, program_prefetch_addr_upper_shifted=0x1,
+                   program_prefetch_addr_lower_shifted=0x23456789, program_prefetch_size=3,
+                   constant_buffer_addr_upper_0=0x10, constant_buffer_addr_lower_0=0x23450000,
+                   constant_buffer_size_shifted4_0=0x160, cta_raster_width=2, cta_raster_height=3,
+                   cta_raster_depth=4, cta_thread_dimension0=5, cta_thread_dimension1=6,
+                   cta_thread_dimension2=7, release0_enable=1, release0_address_upper=0x10,
+                   release0_address_lower=0x34560000, release0_payload_upper=0, release0_payload_lower=7)
+
+  snapshot = qmd.snapshot(0x1020002000)
+
+  assert snapshot["address"] == 0x1020002000
+  assert snapshot["size"] == 0x100
+  assert len(snapshot["raw"]) == 0x200
+  assert snapshot["major_version"] == 3
+  assert snapshot["sass_version"] == 0x82
+  assert snapshot["program_address"] == 0x1012340000
+  assert snapshot["program_prefetch_address"] == 0x12345678900
+  assert snapshot["program_prefetch_size"] == 3
+  assert snapshot["constant_buffer0_address"] == 0x1023450000
+  assert snapshot["constant_buffer0_size_shifted4"] == 0x160
+  assert snapshot["grid"] == [2, 3, 4]
+  assert snapshot["cta_threads"] == [5, 6, 7]
+  assert snapshot["releases"] == [{"enable": 1, "address": 0x1034560000, "payload": 7},
+                                  {"enable": 0, "address": 0, "payload": 0}]
+
 def test_ga100_heap_scales_with_framebuffer_size():
   config = get_nv_chip_config(0x17, 0x00)
   def calculate(fb_size):

@@ -86,6 +86,37 @@ class QMD:
   def set_constant_buf_addr(self, i, addr):
     if self.ver < 4: self.write(**{f'constant_buffer_addr_upper_{i}':hi32(addr), f'constant_buffer_addr_lower_{i}':lo32(addr)})
     else: self.write(**{f'constant_buffer_addr_upper_shifted6_{i}':hi32(addr >> 6), f'constant_buffer_addr_lower_shifted6_{i}':lo32(addr >> 6)})
+  def snapshot(self, va_addr:int) -> dict:
+    def address(lower:str, upper:str, shift:int=0) -> int:
+      return ((self.read(upper) << 32) | self.read(lower)) << shift
+
+    if self.ver < 4:
+      program_address = address("program_address_lower", "program_address_upper")
+      constant_buffer0_address = address("constant_buffer_addr_lower_0", "constant_buffer_addr_upper_0")
+      release_address_fields = ("release{}_address_lower", "release{}_address_upper")
+    else:
+      program_address = address("program_address_lower_shifted4", "program_address_upper_shifted4", 4)
+      constant_buffer0_address = address("constant_buffer_addr_lower_shifted6_0", "constant_buffer_addr_upper_shifted6_0", 6)
+      release_address_fields = ("release_semaphore{}_addr_lower", "release_semaphore{}_addr_upper")
+
+    releases = []
+    for i in range(2):
+      lower, upper = (field.format(i) for field in release_address_fields)
+      releases.append({"enable": self.read(f"release{i}_enable"), "address": address(lower, upper),
+                       "payload": address(f"release{i}_payload_lower", f"release{i}_payload_upper")})
+
+    return {"address": int(va_addr), "size": self.sz * 4, "raw": bytes(self.mv[:self.sz * 4]).hex(),
+            "major_version": self.read("qmd_major_version"), "sass_version": self.read("sass_version"),
+            "program_address": program_address,
+            "program_prefetch_address": address("program_prefetch_addr_lower_shifted", "program_prefetch_addr_upper_shifted", 8),
+            "program_prefetch_size": self.read("program_prefetch_size"),
+            "constant_buffer0_address": constant_buffer0_address,
+            "constant_buffer0_size_shifted4": self.read("constant_buffer_size_shifted4_0"),
+            "grid": [self.read(k) for k in (("cta_raster_width", "cta_raster_height", "cta_raster_depth") if self.ver < 4 else
+                                           ("grid_width", "grid_height", "grid_depth"))],
+            "cta_threads": [self.read(f"cta_thread_dimension{i}") for i in range(3)],
+            "releases": releases}
+
 
 class NVCommandQueue(HWQueue[HCQSignal, 'NVDevice', 'NVProgram', 'NVArgsState']):
   def __init__(self):
@@ -131,8 +162,9 @@ class NVCommandQueue(HWQueue[HCQSignal, 'NVDevice', 'NVProgram', 'NVArgsState'])
       dev.cmdq[cmdq_wptr : cmdq_wptr + len(self._q)] = array.array('I', self._q)
 
     if dev.copy_on_compute_queue:
-      gpfifo.submissions.append({"cmdq_addr": f"0x{int(cmdq_addr):X}",
-                                 "words": [f"0x{int(self._q[i]):08X}" for i in range(min(len(self._q), 128))]})
+      submission = {"cmdq_addr": f"0x{int(cmdq_addr):X}", "words": [f"0x{int(self._q[i]):08X}" for i in range(min(len(self._q), 128))]}
+      if self.active_qmd is not None: submission["qmd"] = self.active_qmd.snapshot(self.active_qmd_buf.va_addr)
+      gpfifo.submissions.append(submission)
     gpfifo.ring[gpfifo.put_value % gpfifo.entries_count] = (cmdq_addr//4 << 2) | (len(self._q) << 42) | (1 << 41)
     gpfifo.gpput[0] = (gpfifo.put_value + 1) % gpfifo.entries_count
 
