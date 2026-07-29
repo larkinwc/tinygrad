@@ -612,7 +612,9 @@ class NV_GSP(NV_IP):
 
       if client is not None and client != self.priv_root and params.hObjectError != 0:
         params.errorNotifierMem = nv_gpu.NV_MEMORY_DESC_PARAMS(base=0, size=0xecc, addressSpace=0, cacheAttrib=0)
-        params.userdMem = nv_gpu.NV_MEMORY_DESC_PARAMS(base=params.hUserdMemory[0] + params.userdOffset[0], size=0x400, addressSpace=2, cacheAttrib=0)
+        userd_size, userd_cache = (0x200, 2) if self.nvdev.chip_name == "GA100" else (0x400, 0)
+        params.userdMem = nv_gpu.NV_MEMORY_DESC_PARAMS(
+          base=params.hUserdMemory[0] + params.userdOffset[0], size=userd_size, addressSpace=2, cacheAttrib=userd_cache)
 
     alloc_args = nv.rpc_gsp_rm_alloc_v(hClient=(client:=client or self.priv_root), hParent=hParent, hObject=(obj:=next(self.handle_gen)),
       hClass=hClass, flags=0x0, paramsSize=ctypes.sizeof(params) if params is not None else 0x0)

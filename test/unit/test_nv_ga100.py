@@ -1,3 +1,4 @@
+import ctypes
 import struct
 from types import SimpleNamespace
 
@@ -142,6 +143,35 @@ def test_context_repromotion_reuses_buffers_without_allocating():
   assert len(controls) == 1
   entry = controls[0]["params"].promoteEntry[0]
   assert (entry.gpuPhysAddr, entry.gpuVirtAddr, entry.bInitialize) == (0, mapping.va_addr, 0)
+
+
+@pytest.mark.parametrize(("chip_name", "userd_size", "userd_cache"), (("GA100", 0x200, 2), ("GA102", 0x400, 0)))
+def test_user_gpfifo_uses_chip_userd_contract(chip_name, userd_size, userd_cache):
+  gsp = SimpleNamespace(
+    gpfifo_class=nv_gpu.AMPERE_CHANNEL_GPFIFO_A,
+    compute_class=nv_gpu.AMPERE_COMPUTE_A,
+    priv_root=0xC1E00004,
+    handle_gen=iter([0xCF00000E]),
+    cmd_q=SimpleNamespace(send_rpc=lambda *_args: None),
+    stat_q=SimpleNamespace(wait_resp=lambda *_args: b""),
+    nvdev=SimpleNamespace(
+      chip_name=chip_name,
+      mm=SimpleNamespace(valloc=lambda *_args, **_kwargs: SimpleNamespace(paddrs=[(0x01000000, 0x1000)])),
+      _alloc_boot_mem=lambda *_args, **_kwargs: (None, 0x02000000, None),
+    ),
+  )
+  params = nv_gpu.NV_CHANNELGPFIFO_ALLOCATION_PARAMETERS(
+    hObjectError=1,
+    hUserdMemory=(ctypes.c_uint32 * 8)(0x03000000),
+    userdOffset=(ctypes.c_uint64 * 8)(0x80000),
+  )
+
+  result = NV_GSP.rpc_rm_alloc(gsp, 0xCF00000C, nv_gpu.AMPERE_CHANNEL_GPFIFO_A, params, client=0xC1000000)
+
+  assert result == 0xCF00000E
+  assert params.userdMem.base == 0x03080000
+  assert params.userdMem.size == userd_size
+  assert params.userdMem.cacheAttrib == userd_cache
 
 
 @pytest.mark.parametrize(("chip_name", "promotion_count"), (("GA100", 1), ("GA102", 2)))
