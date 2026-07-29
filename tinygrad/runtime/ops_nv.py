@@ -125,6 +125,8 @@ class NVCommandQueue(HWQueue[HCQSignal, 'NVDevice', 'NVProgram', 'NVArgsState'])
 
     System.memory_barrier()
     dev.gpu_mmio[0x90 // 4] = gpfifo.token
+    try: gpfifo.doorbell_readback, gpfifo.doorbell_error = int(dev.gpu_mmio[0x90 // 4]), None
+    except Exception as error: gpfifo.doorbell_readback, gpfifo.doorbell_error = None, f"{type(error).__name__}: {error}"
     gpfifo.put_value += 1
 
 class NVComputeQueue(NVCommandQueue):
@@ -377,7 +379,10 @@ class GPFifo:
   error_notifier_size: int
   entries_count: int
   token: int
+  handle: int
   put_value: int = 0
+  doorbell_readback: int|None = None
+  doorbell_error: str|None = None
 
 class NVKIface:
   root = None
@@ -689,7 +694,7 @@ class NVDevice(HCQCompiled[NVSignal]):
 
     userd_base = offset + entries*8
     return GPFifo(ring=gpfifo_area.cpu_view().view(offset, entries*8, fmt='Q'), entries_count=entries, token=ws_token_params.workSubmitToken,
-                  gpput=gpfifo_area.cpu_view().view(userd_base + getattr(nv_gpu.AmpereAControlGPFifo, 'GPPut').offset, fmt='I'),
+                  handle=gpfifo, gpput=gpfifo_area.cpu_view().view(userd_base + getattr(nv_gpu.AmpereAControlGPFifo, 'GPPut').offset, fmt='I'),
                   gpget=gpfifo_area.cpu_view().view(userd_base + getattr(nv_gpu.AmpereAControlGPFifo, 'GPGet').offset, fmt='I'),
                   error_notifier=notifier, error_notifier_base=params.errorNotifierMem.base, error_notifier_size=params.errorNotifierMem.size)
 
@@ -772,9 +777,17 @@ class NVDevice(HCQCompiled[NVSignal]):
       if not hasattr(self, name) or id(gpfifo:=getattr(self, name)) in seen_gpfifos: continue
       seen_gpfifos.add(id(gpfifo))
       notifier = "unmapped" if gpfifo.error_notifier.view is None else \
-        bytes(gpfifo.error_notifier.cpu_view().view(size=min(gpfifo.error_notifier.size, 64), fmt='B')).hex()
-      report.append(f"{name}: GPGet={gpfifo.gpget[0]} GPPut={gpfifo.gpput[0]} SWPut={gpfifo.put_value} token=0x{gpfifo.token:X} "
+        bytes(gpfifo.error_notifier.cpu_view().view(size=min(gpfifo.error_notifier.size, 256), fmt='B')).hex()
+      ring = [f"0x{int(gpfifo.ring[i]):016X}" for i in range(min(gpfifo.put_value, 8))]
+      report.append(f"{name}: handle=0x{gpfifo.handle:X} GPGet={gpfifo.gpget[0]} GPPut={gpfifo.gpput[0]} SWPut={gpfifo.put_value} "
+                    f"token=0x{gpfifo.token:X} doorbell={gpfifo.doorbell_readback!r} doorbell_error={gpfifo.doorbell_error!r} ring={ring} "
                     f"error_notifier=0x{gpfifo.error_notifier_base:X}+0x{gpfifo.error_notifier_size:X} data={notifier}")
+    try:
+      context = self.iface.rm_control(self.compute_gpfifo.handle, nv_gpu.NVA06F_CTRL_CMD_GET_CONTEXT_ID,
+        nv_gpu.NVA06F_CTRL_GET_CONTEXT_ID_PARAMS())
+      report.append(f"channel contextId=0x{context.contextId:X}")
+    except Exception as error:
+      report.append(f"channel context query failed: {type(error).__name__}: {error}")
     try:
       sm_errors = self.iface.rm_control(self.debugger, nv_gpu.NV83DE_CTRL_CMD_DEBUG_READ_ALL_SM_ERROR_STATES,
         nv_gpu.NV83DE_CTRL_DEBUG_READ_ALL_SM_ERROR_STATES_PARAMS(hTargetChannel=self.debug_channel, numSMsToRead=100))
