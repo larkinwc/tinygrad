@@ -42,6 +42,11 @@ def nv_renderer_arch(sm_version:int) -> str:
 def nv_qmd_sass_version(sm_version:int) -> int:
   return ((sm_version & 0xf00) >> 4) | (sm_version & 0xf)
 
+def nv_pcas_action(compute_class:int) -> int:
+  # Ampere's documented launch sequence copies and schedules the QMD. GA100 did not complete its first QMD with PREFETCH_SCHEDULE.
+  if compute_class == nv_gpu.AMPERE_COMPUTE_A: return nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_INVALIDATE_COPY_SCHEDULE
+  return nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE
+
 NV_PFAULT_FAULT_TYPE = {dt:name for name,dt in nv_gpu.__dict__.items() if name.startswith("NV_PFAULT_FAULT_TYPE_")}
 NV_PFAULT_ACCESS_TYPE = {dt:name.split("_")[-1] for name,dt in nv_gpu.__dict__.items() if name.startswith("NV_PFAULT_ACCESS_TYPE_")}
 
@@ -211,7 +216,7 @@ class NVComputeQueue(NVCommandQueue):
     if self.active_qmd is None:
       if prg.dev.pma_enabled: self.nvm(1, nv_gpu.NVC6C0_PM_TRIGGER, 0)
       self.nvm(1, nv_gpu.NVC6C0_SEND_PCAS_A, qmd_buf.va_addr >> 8)
-      self.nvm(1, nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B, 9)
+      self.nvm(1, nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B, nv_pcas_action(prg.dev.iface.compute_class))
     else:
       self.active_qmd.write(dependent_qmd0_pointer=qmd_buf.va_addr >> 8, dependent_qmd0_action=1, dependent_qmd0_prefetch=1, dependent_qmd0_enable=1)
 
@@ -868,16 +873,20 @@ class NVDevice(HCQCompiled[NVSignal]):
     try:
       sm_errors = self.iface.rm_control(self.debugger, nv_gpu.NV83DE_CTRL_CMD_DEBUG_READ_ALL_SM_ERROR_STATES,
         nv_gpu.NV83DE_CTRL_DEBUG_READ_ALL_SM_ERROR_STATES_PARAMS(hTargetChannel=self.debug_channel, numSMsToRead=100))
+      fault_count = 0
       if sm_errors.mmuFault.valid:
         mmu = self.iface.rm_control(self.debugger, nv_gpu.NV83DE_CTRL_CMD_DEBUG_READ_MMU_FAULT_INFO,
           nv_gpu.NV83DE_CTRL_DEBUG_READ_MMU_FAULT_INFO_PARAMS())
         for i in range(mmu.count):
           pfinfo = mmu.mmuFaultInfoList[i]
           report += [f"MMU fault: 0x{pfinfo.faultAddress:X} | {NV_PFAULT_FAULT_TYPE[pfinfo.faultType]} | {NV_PFAULT_ACCESS_TYPE[pfinfo.accessType]}"]
+          fault_count += 1
       else:
         for i, e in enumerate(sm_errors.smErrorStateArray):
           if e.hwwGlobalEsr or e.hwwWarpEsr:
             report += [f"SM {i} fault: esr={e.hwwGlobalEsr} warp_esr={e.hwwWarpEsr:#x} warp_pc={e.hwwWarpEsrPc64:#x}"]
+            fault_count += 1
+      if fault_count == 0: report.append("debugger faults: none")
     except Exception as error:
       report.append(f"debugger fault query failed: {type(error).__name__}: {error}")
 
