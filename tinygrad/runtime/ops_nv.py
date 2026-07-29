@@ -2,7 +2,7 @@ from __future__ import annotations
 import os, ctypes, contextlib, re, functools, mmap, struct, array, sys, weakref
 assert sys.platform != 'win32'
 from typing import cast
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from tinygrad.runtime.support.hcq import HCQCompiled, HCQAllocator, HCQBuffer, HWQueue, CLikeArgsState, HCQProgram, HCQSignal, BumpAllocator
 from tinygrad.runtime.support.hcq import MMIOInterface, FileIOInterface, hcq_filter_visible_devices, hcq_profile
 from tinygrad.uop.ops import sint
@@ -120,6 +120,9 @@ class NVCommandQueue(HWQueue[HCQSignal, 'NVDevice', 'NVProgram', 'NVArgsState'])
       cmdq_wptr = (cmdq_addr - dev.cmdq_page.va_addr) // 4
       dev.cmdq[cmdq_wptr : cmdq_wptr + len(self._q)] = array.array('I', self._q)
 
+    if dev.copy_on_compute_queue:
+      gpfifo.submissions.append({"cmdq_addr": f"0x{int(cmdq_addr):X}",
+                                 "words": [f"0x{int(self._q[i]):08X}" for i in range(min(len(self._q), 128))]})
     gpfifo.ring[gpfifo.put_value % gpfifo.entries_count] = (cmdq_addr//4 << 2) | (len(self._q) << 42) | (1 << 41)
     gpfifo.gpput[0] = (gpfifo.put_value + 1) % gpfifo.entries_count
 
@@ -383,6 +386,7 @@ class GPFifo:
   put_value: int = 0
   doorbell_readback: int|None = None
   doorbell_error: str|None = None
+  submissions: list[dict] = field(default_factory=list)
 
 class NVKIface:
   root = None
@@ -669,6 +673,7 @@ class NVDevice(HCQCompiled[NVSignal]):
 
   def _new_gpu_fifo(self, gpfifo_area, ctxshare, channel_group, offset=0, entries=0x400, compute=False, video=False) -> GPFifo:
     notifier = self.iface.alloc(48 << 20, uncached=True, cpu_access=self.copy_on_compute_queue)
+    if notifier.view is not None: notifier.cpu_view().view(size=0xecc, fmt='B')[:] = bytes(0xecc)
     params = nv_gpu.NV_CHANNELGPFIFO_ALLOCATION_PARAMETERS(gpFifoOffset=gpfifo_area.va_addr+offset, gpFifoEntries=entries, hContextShare=ctxshare,
       hObjectError=notifier.meta.hMemory, hObjectBuffer=self.virtmem if video else gpfifo_area.meta.hMemory,
       hUserdMemory=(ctypes.c_uint32*8)(gpfifo_area.meta.hMemory), userdOffset=(ctypes.c_uint64*8)(entries*8+offset), engineType=19 if video else 0)
@@ -776,12 +781,16 @@ class NVDevice(HCQCompiled[NVSignal]):
     for name in ("compute_gpfifo", "dma_gpfifo"):
       if not hasattr(self, name) or id(gpfifo:=getattr(self, name)) in seen_gpfifos: continue
       seen_gpfifos.add(id(gpfifo))
-      notifier = "unmapped" if gpfifo.error_notifier.view is None else \
-        bytes(gpfifo.error_notifier.cpu_view().view(size=min(gpfifo.error_notifier.size, 256), fmt='B')).hex()
+      notifier_raw = b"" if gpfifo.error_notifier.view is None else \
+        bytes(gpfifo.error_notifier.cpu_view().view(size=min(gpfifo.error_notifier.size, 256), fmt='B'))
+      notifier = "unmapped" if not notifier_raw else notifier_raw.hex()
+      notification = None if len(notifier_raw) < 16 else dict(zip(("timestamp", "info32", "info16", "status"),
+        struct.unpack_from("<QIHH", notifier_raw)))
       ring = [f"0x{int(gpfifo.ring[i]):016X}" for i in range(min(gpfifo.put_value, 8))]
       report.append(f"{name}: handle=0x{gpfifo.handle:X} GPGet={gpfifo.gpget[0]} GPPut={gpfifo.gpput[0]} SWPut={gpfifo.put_value} "
                     f"token=0x{gpfifo.token:X} doorbell={gpfifo.doorbell_readback!r} doorbell_error={gpfifo.doorbell_error!r} ring={ring} "
-                    f"error_notifier=0x{gpfifo.error_notifier_base:X}+0x{gpfifo.error_notifier_size:X} data={notifier}")
+                    f"submissions={gpfifo.submissions!r} error_notifier=0x{gpfifo.error_notifier_base:X}+0x{gpfifo.error_notifier_size:X} "
+                    f"notification={notification!r} data={notifier}")
     try:
       context = self.iface.rm_control(self.compute_gpfifo.handle, nv_gpu.NVA06F_CTRL_CMD_GET_CONTEXT_ID,
         nv_gpu.NVA06F_CTRL_GET_CONTEXT_ID_PARAMS())
