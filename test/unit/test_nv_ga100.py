@@ -129,6 +129,21 @@ def test_qmd_snapshot_captures_launch_and_release_contract():
   assert snapshot["releases"] == [{"enable": 1, "address": 0x1034560000, "payload": 7},
                                   {"enable": 0, "address": 0, "payload": 0}]
 
+def test_gr_context_buffer_snapshot_preserves_binding_contract():
+  buffers = [
+    SimpleNamespace(bufferType=0, size=0x160000, alignment=0x1000, bufferHandle=0x1234, physAddr=0x56780000, aperture=2,
+                    pageSize=0x1000, pageCount=0x160, bIsContigous=1, bGlobalBuffer=0, bLocalBuffer=1, bDeviceDescendant=0),
+    SimpleNamespace(bufferType=10, size=0x80000, alignment=0x20000, bufferHandle=0x2345, physAddr=0x67890000, aperture=2,
+                    pageSize=0x1000, pageCount=0x80, bIsContigous=1, bGlobalBuffer=1, bLocalBuffer=0, bDeviceDescendant=1),
+  ]
+
+  assert ops_nv.nv_gr_ctx_buffer_snapshot(SimpleNamespace(bufferCount=2, ctxBufferInfo=buffers)) == [
+    {"id": 0, "size": 0x160000, "alignment": 0x1000, "handle": 0x1234, "phys_addr": 0x56780000, "aperture": 2,
+     "page_size": 0x1000, "page_count": 0x160, "contiguous": 1, "global": 0, "local": 1, "device_descendant": 0},
+    {"id": 10, "size": 0x80000, "alignment": 0x20000, "handle": 0x2345, "phys_addr": 0x67890000, "aperture": 2,
+     "page_size": 0x1000, "page_count": 0x80, "contiguous": 1, "global": 1, "local": 0, "device_descendant": 1},
+  ]
+
 def test_ga100_heap_scales_with_framebuffer_size():
   config = get_nv_chip_config(0x17, 0x00)
   def calculate(fb_size):

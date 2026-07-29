@@ -48,6 +48,12 @@ NV_PFAULT_ACCESS_TYPE = {dt:name.split("_")[-1] for name,dt in nv_gpu.__dict__.i
 def nv_flags(reg, **kwargs): return functools.reduce(int.__or__, ((getattr(nv_gpu, f"{reg}_{k}_{v}".upper()) if isinstance(v, str) else v) <<
   getattr(nv_gpu, f"{reg}_{k}".upper())[1] for k, v in kwargs.items()), 0)
 
+def nv_gr_ctx_buffer_snapshot(params) -> list[dict[str, int]]:
+  return [{"id": int(info.bufferType), "size": int(info.size), "alignment": int(info.alignment), "handle": int(info.bufferHandle),
+           "phys_addr": int(info.physAddr), "aperture": int(info.aperture), "page_size": int(info.pageSize), "page_count": int(info.pageCount),
+           "contiguous": int(info.bIsContigous), "global": int(info.bGlobalBuffer), "local": int(info.bLocalBuffer),
+           "device_descendant": int(info.bDeviceDescendant)} for info in params.ctxBufferInfo[:params.bufferCount]]
+
 def nv_iowr(fd:FileIOInterface, nr, args, cmd=None):
   ret = fd.ioctl(cmd or ((3 << 30) | (ctypes.sizeof(args) & 0x1FFF) << 16 | (ord('F') & 0xFF) << 8 | (nr & 0xFF)), args)
   if ret != 0: raise RuntimeError(f"ioctl returned {ret}")
@@ -853,6 +859,12 @@ class NVDevice(HCQCompiled[NVSignal]):
       report.append(f"channel contextId=0x{context.contextId:X}")
     except Exception as error:
       report.append(f"channel context query failed: {type(error).__name__}: {error}")
+    try:
+      ctx_buffers = self.iface.rm_control(self.subdevice, nv_gpu.NV2080_CTRL_CMD_GR_GET_CTX_BUFFER_INFO,
+        nv_gpu.NV2080_CTRL_GR_GET_CTX_BUFFER_INFO_PARAMS(hUserClient=self.iface.root, hChannel=self.compute_gpfifo.handle))
+      report.append(f"channel context buffers: count={ctx_buffers.bufferCount} entries={nv_gr_ctx_buffer_snapshot(ctx_buffers)!r}")
+    except Exception as error:
+      report.append(f"channel context buffer query failed: {type(error).__name__}: {error}")
     try:
       sm_errors = self.iface.rm_control(self.debugger, nv_gpu.NV83DE_CTRL_CMD_DEBUG_READ_ALL_SM_ERROR_STATES,
         nv_gpu.NV83DE_CTRL_DEBUG_READ_ALL_SM_ERROR_STATES_PARAMS(hTargetChannel=self.debug_channel, numSMsToRead=100))
