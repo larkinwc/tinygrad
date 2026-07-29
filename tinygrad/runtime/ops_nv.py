@@ -618,7 +618,7 @@ class NVDevice(HCQCompiled[NVSignal]):
     ctxshare_params = nv_gpu.NV_CTXSHARE_ALLOCATION_PARAMETERS(hVASpace=vaspace, flags=nv_gpu.NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT_ASYNC)
     ctxshare = self.iface.rm_alloc(self.channel_group, nv_gpu.FERMI_CONTEXT_SHARE_A, ctxshare_params)
 
-    self._setup_compute_and_dma_gpfifos(ctxshare)
+    self._setup_compute_and_dma_gpfifos(ctxshare, vaspace)
     self.iface.rm_control(self.channel_group, nv_gpu.NVA06C_CTRL_CMD_GPFIFO_SCHEDULE, nv_gpu.NVA06C_CTRL_GPFIFO_SCHEDULE_PARAMS(bEnable=1))
 
     self.cmdq_page:HCQBuffer = self.iface.alloc(0x200000, cpu_access=True)
@@ -640,18 +640,17 @@ class NVDevice(HCQCompiled[NVSignal]):
 
     self._setup_gpfifos()
 
-  def _setup_compute_and_dma_gpfifos(self, ctxshare):
+  def _setup_compute_and_dma_gpfifos(self, ctxshare, vaspace):
     self.compute_gpfifo = self._new_gpu_fifo(self.gpfifo_area, ctxshare, self.channel_group, offset=0, entries=0x10000, compute=True)
     if self.is_nvd() and self.iface.dev_impl.chip_name == "GA100":
-      self.iface.rm_alloc(self.debug_channel, self.iface.dma_class)
-      self.dma_gpfifo = self.compute_gpfifo
+      self.dma_gpfifo = self._new_gpu_fifo(self.gpfifo_area, 0, self.nvdevice, offset=0x100000, entries=0x10000, compute=False, vaspace=vaspace)
     else:
       self.dma_gpfifo = self._new_gpu_fifo(self.gpfifo_area, ctxshare, self.channel_group, offset=0x100000, entries=0x10000, compute=False)
 
-  def _new_gpu_fifo(self, gpfifo_area, ctxshare, channel_group, offset=0, entries=0x400, compute=False, video=False) -> GPFifo:
+  def _new_gpu_fifo(self, gpfifo_area, ctxshare, channel_group, offset=0, entries=0x400, compute=False, video=False, vaspace=0) -> GPFifo:
     notifier = self.iface.alloc(48 << 20, uncached=True)
     params = nv_gpu.NV_CHANNELGPFIFO_ALLOCATION_PARAMETERS(gpFifoOffset=gpfifo_area.va_addr+offset, gpFifoEntries=entries, hContextShare=ctxshare,
-      hObjectError=notifier.meta.hMemory, hObjectBuffer=self.virtmem if video else gpfifo_area.meta.hMemory,
+      hVASpace=vaspace, hObjectError=notifier.meta.hMemory, hObjectBuffer=self.virtmem if video else gpfifo_area.meta.hMemory,
       hUserdMemory=(ctypes.c_uint32*8)(gpfifo_area.meta.hMemory), userdOffset=(ctypes.c_uint64*8)(entries*8+offset), engineType=19 if video else 0)
     gpfifo = self.iface.rm_alloc(channel_group, self.iface.gpfifo_class, params)
 
