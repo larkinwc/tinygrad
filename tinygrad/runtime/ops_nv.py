@@ -775,18 +775,21 @@ class NVDevice(HCQCompiled[NVSignal]):
         bytes(gpfifo.error_notifier.cpu_view().view(size=min(gpfifo.error_notifier.size, 64), fmt='B')).hex()
       report.append(f"{name}: GPGet={gpfifo.gpget[0]} GPPut={gpfifo.gpput[0]} SWPut={gpfifo.put_value} token=0x{gpfifo.token:X} "
                     f"error_notifier=0x{gpfifo.error_notifier_base:X}+0x{gpfifo.error_notifier_size:X} data={notifier}")
-    sm_errors = self.iface.rm_control(self.debugger, nv_gpu.NV83DE_CTRL_CMD_DEBUG_READ_ALL_SM_ERROR_STATES,
-      nv_gpu.NV83DE_CTRL_DEBUG_READ_ALL_SM_ERROR_STATES_PARAMS(hTargetChannel=self.debug_channel, numSMsToRead=100))
-
-    if sm_errors.mmuFault.valid:
-      mmu = self.iface.rm_control(self.debugger, nv_gpu.NV83DE_CTRL_CMD_DEBUG_READ_MMU_FAULT_INFO,
-        nv_gpu.NV83DE_CTRL_DEBUG_READ_MMU_FAULT_INFO_PARAMS())
-      for i in range(mmu.count):
-        pfinfo = mmu.mmuFaultInfoList[i]
-        report += [f"MMU fault: 0x{pfinfo.faultAddress:X} | {NV_PFAULT_FAULT_TYPE[pfinfo.faultType]} | {NV_PFAULT_ACCESS_TYPE[pfinfo.accessType]}"]
-    else:
-      for i, e in enumerate(sm_errors.smErrorStateArray):
-        if e.hwwGlobalEsr or e.hwwWarpEsr: report += [f"SM {i} fault: esr={e.hwwGlobalEsr} warp_esr={e.hwwWarpEsr:#x} warp_pc={e.hwwWarpEsrPc64:#x}"]
+    try:
+      sm_errors = self.iface.rm_control(self.debugger, nv_gpu.NV83DE_CTRL_CMD_DEBUG_READ_ALL_SM_ERROR_STATES,
+        nv_gpu.NV83DE_CTRL_DEBUG_READ_ALL_SM_ERROR_STATES_PARAMS(hTargetChannel=self.debug_channel, numSMsToRead=100))
+      if sm_errors.mmuFault.valid:
+        mmu = self.iface.rm_control(self.debugger, nv_gpu.NV83DE_CTRL_CMD_DEBUG_READ_MMU_FAULT_INFO,
+          nv_gpu.NV83DE_CTRL_DEBUG_READ_MMU_FAULT_INFO_PARAMS())
+        for i in range(mmu.count):
+          pfinfo = mmu.mmuFaultInfoList[i]
+          report += [f"MMU fault: 0x{pfinfo.faultAddress:X} | {NV_PFAULT_FAULT_TYPE[pfinfo.faultType]} | {NV_PFAULT_ACCESS_TYPE[pfinfo.accessType]}"]
+      else:
+        for i, e in enumerate(sm_errors.smErrorStateArray):
+          if e.hwwGlobalEsr or e.hwwWarpEsr:
+            report += [f"SM {i} fault: esr={e.hwwGlobalEsr} warp_esr={e.hwwWarpEsr:#x} warp_pc={e.hwwWarpEsrPc64:#x}"]
+    except Exception as error:
+      report.append(f"debugger fault query failed: {type(error).__name__}: {error}")
 
     raise RuntimeError("\n".join(report))
 
