@@ -105,15 +105,11 @@ def test_ga100_nvd_uses_sm80_renderer_target():
     nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE
 
 
-def test_program_snapshot_reads_resident_vram_image():
-  resident = bytearray(0x1000)
+def test_program_snapshot_reports_copied_back_resident_image():
   program = bytes(range(0x80))
-  resident[0x300:0x380] = program
-  mapping = SimpleNamespace(aspace=ops_nv.AddrSpace.PHYS, paddrs=[(0x100, 0x800)])
-  prg = SimpleNamespace(program_address=0x1200, program_image=program,
-                        lib_gpu=SimpleNamespace(va_addr=0x1000, meta=SimpleNamespace(mapping=mapping)),
-                        dev=SimpleNamespace(iface=SimpleNamespace(dev_impl=SimpleNamespace(
-                          vram=SimpleNamespace(view=lambda off, size, fmt: memoryview(resident)[off:off+size])))))
+  mapping = SimpleNamespace(aspace=ops_nv.AddrSpace.PHYS)
+  prg = SimpleNamespace(program_address=0x1200, program_image=program, program_resident_image=program,
+                        lib_gpu=SimpleNamespace(meta=SimpleNamespace(mapping=mapping)))
 
   snapshot = ops_nv.nv_program_snapshot(prg)
 

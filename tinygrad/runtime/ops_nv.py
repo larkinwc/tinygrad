@@ -60,25 +60,12 @@ def nv_gr_ctx_buffer_snapshot(params) -> list[dict[str, int]]:
            "device_descendant": int(info.bDeviceDescendant)} for info in params.ctxBufferInfo[:params.bufferCount]]
 
 def nv_program_snapshot(prg) -> dict[str, int|str|bool]:
-  mapping, expected = prg.lib_gpu.meta.mapping, prg.program_image
+  mapping, expected, resident = prg.lib_gpu.meta.mapping, prg.program_image, prg.program_resident_image
   snapshot = {"address": int(prg.program_address), "size": len(expected), "address_space": mapping.aspace.name,
               "expected_sha256": hashlib.sha256(expected).hexdigest(), "expected": expected.hex()}
-  if mapping.aspace is not AddrSpace.PHYS: return snapshot | {"resident_status": "not_vram"}
-
-  logical_offset, remaining, resident = prg.program_address - prg.lib_gpu.va_addr, len(expected), bytearray()
-  for paddr, physical_size in mapping.paddrs:
-    if logical_offset >= physical_size:
-      logical_offset -= physical_size
-      continue
-    take = min(remaining, physical_size - logical_offset)
-    resident.extend(bytes(prg.dev.iface.dev_impl.vram.view(paddr + logical_offset, take, fmt='B')))
-    remaining, logical_offset = remaining - take, 0
-    if remaining == 0: break
-  if remaining: return snapshot | {"resident_status": f"short_read:{len(expected) - remaining}"}
-
-  resident_bytes = bytes(resident)
-  return snapshot | {"resident_status": "match" if resident_bytes == expected else "mismatch",
-                     "resident_sha256": hashlib.sha256(resident_bytes).hexdigest(), "resident": resident_bytes.hex()}
+  if resident is None: return snapshot | {"resident_status": "not_captured"}
+  return snapshot | {"resident_status": "match" if resident == expected else "mismatch",
+                     "resident_sha256": hashlib.sha256(resident).hexdigest(), "resident": resident.hex()}
 
 def nv_iowr(fd:FileIOInterface, nr, args, cmd=None):
   ret = fd.ioctl(cmd or ((3 << 30) | (ctypes.sizeof(args) & 0x1FFF) << 16 | (ord('F') & 0xFF) << 8 | (nr & 0xFF)), args)
@@ -374,11 +361,16 @@ class NVProgram(HCQProgram['NVDevice']):
       min_cbuf0_entries = 224 if dev.iface.compute_class >= nv_gpu.BLACKWELL_COMPUTE_A else 12
       self.cbuf_0 = [0] * max(cbuf0_size // 4, min_cbuf0_entries)
 
-    self.program_address, self.program_image = prog_addr, bytes(image)[prog_addr-self.lib_gpu.va_addr:prog_addr-self.lib_gpu.va_addr+prog_sz]
+    self.program_address, self.program_image, self.program_resident_image = \
+      prog_addr, bytes(image)[prog_addr-self.lib_gpu.va_addr:prog_addr-self.lib_gpu.va_addr+prog_sz], None
     # Ensure device has enough local memory to run the program
     self.dev._ensure_has_local_memory(self.lcmem_usage)
     self.dev.allocator._copyin(self.lib_gpu, image)
     self.dev.synchronize()
+    if dev.copy_on_compute_queue:
+      resident = bytearray(len(self.program_image))
+      self.dev.allocator._copyout(memoryview(resident), self.lib_gpu.offset(prog_addr-self.lib_gpu.va_addr, len(resident)))
+      self.program_resident_image = bytes(resident)
 
     if dev.iface.compute_class >= nv_gpu.BLACKWELL_COMPUTE_A:
       if not NAK: self.cbuf_0[188:192], self.cbuf_0[223] = [*data64_le(self.dev.shared_mem_window), *data64_le(self.dev.local_mem_window)], 0xfffdc0
