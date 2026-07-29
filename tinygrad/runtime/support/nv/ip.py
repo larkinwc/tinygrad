@@ -611,7 +611,8 @@ class NV_GSP(NV_IP):
       params.mthdbufMem = nv_gpu.NV_MEMORY_DESC_PARAMS(base=method_paddr, size=0x5000, addressSpace=2, cacheAttrib=0)
 
       if client is not None and client != self.priv_root and params.hObjectError != 0:
-        params.errorNotifierMem = nv_gpu.NV_MEMORY_DESC_PARAMS(base=0, size=0xecc, addressSpace=0, cacheAttrib=0)
+        if params.errorNotifierMem.base == 0:
+          params.errorNotifierMem = nv_gpu.NV_MEMORY_DESC_PARAMS(base=0, size=0xecc, addressSpace=0, cacheAttrib=0)
         userd_size, userd_cache = (0x200, 2) if self.nvdev.chip_name == "GA100" else (0x400, 0)
         params.userdMem = nv_gpu.NV_MEMORY_DESC_PARAMS(
           base=params.hUserdMemory[0] + params.userdOffset[0], size=userd_size, addressSpace=2, cacheAttrib=userd_cache)

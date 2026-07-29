@@ -183,6 +183,7 @@ def test_user_gpfifo_uses_chip_userd_contract(chip_name, userd_size, userd_cache
     hObjectError=1,
     hUserdMemory=(ctypes.c_uint32 * 8)(0x03000000),
     userdOffset=(ctypes.c_uint64 * 8)(0x80000),
+    errorNotifierMem=nv_gpu.NV_MEMORY_DESC_PARAMS(base=0x123450000, size=0xECC, addressSpace=1, cacheAttrib=0),
   )
 
   result = NV_GSP.rpc_rm_alloc(gsp, 0xCF00000C, nv_gpu.AMPERE_CHANNEL_GPFIFO_A, params, client=0xC1000000)
@@ -191,6 +192,9 @@ def test_user_gpfifo_uses_chip_userd_contract(chip_name, userd_size, userd_cache
   assert params.userdMem.base == 0x03080000
   assert params.userdMem.size == userd_size
   assert params.userdMem.cacheAttrib == userd_cache
+  assert params.errorNotifierMem.base == 0x123450000
+  assert params.errorNotifierMem.size == 0xECC
+  assert params.errorNotifierMem.addressSpace == 1
 
 
 @pytest.mark.parametrize(("chip_name", "promotion_count"), (("GA100", 1), ("GA102", 2)))
