@@ -624,8 +624,14 @@ class NV_GSP(NV_IP):
     if hClass == nv_gpu.NV01_DEVICE_0 and client != self.priv_root: self.device = obj # save user device handle
     if hClass == nv_gpu.NV20_SUBDEVICE_0: self.subdevice = obj # save subdevice handle
     if hClass == self.compute_class and client != self.priv_root:
-      phys_gr_ctx = self.promote_ctx(client, self.subdevice, hParent, {k:v for k,v in self.grctx_bufs.items() if k in [0, 1, 2]}, virt=False)
-      self.promote_ctx(client, self.subdevice, hParent, {k:v for k,v in self.grctx_bufs.items() if k in [0, 1, 2]}, phys_gr_ctx, phys=False)
+      ctxbufs = {k:v for k,v in self.grctx_bufs.items() if k in [0, 1, 2]}
+      if self.nvdev.chip_name == "GA100":
+        # OpenRM composes PA initialization and VA promotion in one entry/control. GA100's private combined promotion succeeds,
+        # while a second user virtual-only control stalls, so use the same combined contract for its user context.
+        self.promote_ctx(client, self.subdevice, hParent, ctxbufs)
+      else:
+        phys_gr_ctx = self.promote_ctx(client, self.subdevice, hParent, ctxbufs, virt=False)
+        self.promote_ctx(client, self.subdevice, hParent, ctxbufs, phys_gr_ctx, phys=False)
     return obj if hClass != nv_gpu.NV1_ROOT else client
 
   def rpc_rm_control(self, hObject:int, cmd:int, params:Any, client=None, extra=None):

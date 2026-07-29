@@ -122,6 +122,36 @@ def test_context_repromotion_reuses_buffers_without_allocating():
   assert (entry.gpuPhysAddr, entry.gpuVirtAddr, entry.bInitialize) == (0, mapping.va_addr, 0)
 
 
+@pytest.mark.parametrize(("chip_name", "promotion_count"), (("GA100", 1), ("GA102", 2)))
+def test_user_compute_allocation_preserves_chip_promotion_contract(chip_name, promotion_count):
+  promotions = []
+  gsp = SimpleNamespace(
+    gpfifo_class=nv_gpu.AMPERE_CHANNEL_GPFIFO_A,
+    compute_class=nv_gpu.AMPERE_COMPUTE_A,
+    priv_root=0xC1E00004,
+    handle_gen=iter([0xCF00000F]),
+    cmd_q=SimpleNamespace(send_rpc=lambda *_args: None),
+    stat_q=SimpleNamespace(wait_resp=lambda *_args: b""),
+    subdevice=0xCF000009,
+    nvdev=SimpleNamespace(chip_name=chip_name),
+    grctx_bufs={
+      0: GRBufDesc(size=0x160000, virt=True, phys=True),
+      1: GRBufDesc(size=0x5000, virt=True, phys=True),
+      2: GRBufDesc(size=0x5000, virt=True, phys=True),
+    },
+    promote_ctx=lambda *args, **kwargs: promotions.append((args, kwargs)),
+  )
+
+  result = NV_GSP.rpc_rm_alloc(gsp, 0xCF00000E, nv_gpu.AMPERE_COMPUTE_A, None, client=0xC1000000)
+
+  assert result == 0xCF00000F
+  assert len(promotions) == promotion_count
+  assert promotions[0][0][:3] == (0xC1000000, 0xCF000009, 0xCF00000E)
+  assert set(promotions[0][0][3]) == {0, 1, 2}
+  if chip_name == "GA100": assert promotions[0][1] == {}
+  else: assert [kwargs for _args, kwargs in promotions] == [{"virt": False}, {"phys": False}]
+
+
 def test_ga100_flcn_skips_fwsec_frts():
   flcn = NV_FLCN_GA100.__new__(NV_FLCN_GA100)
   calls = []
