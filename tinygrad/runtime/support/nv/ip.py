@@ -568,7 +568,8 @@ class NV_GSP(NV_IP):
       2: GRBufDesc(patch_size, phys=True, virt=True), **{x: GRBufDesc(cfgs_sizes[x], phys=False, virt=True) for x in range(3, 7)},
       9: GRBufDesc(cfgs_sizes[9], phys=True, virt=True), 10: GRBufDesc(cfgs_sizes[10], phys=True, virt=False),
       11: GRBufDesc(cfgs_sizes[10], phys=True, virt=True)} # NOTE: 11 reuses cfgs_sizes[10]
-    self.promote_ctx(self.priv_root, subdev, ch_gpfifo, {k:v for k, v in self.grctx_bufs.items() if not v.local})
+    self.grctx_buf_allocs = self.promote_ctx(
+      self.priv_root, subdev, ch_gpfifo, {k:v for k, v in self.grctx_bufs.items() if not v.local})
 
     self.rpc_rm_alloc(hParent=ch_gpfifo, hClass=self.compute_class, params=None)
     self.rpc_rm_alloc(hParent=ch_gpfifo, hClass=self.dma_class, params=None)
@@ -628,12 +629,12 @@ class NV_GSP(NV_IP):
     if hClass == nv_gpu.NV20_SUBDEVICE_0: self.subdevice = obj # save subdevice handle
     if hClass == self.compute_class and client != self.priv_root:
       ctxbufs = {k:v for k,v in self.grctx_bufs.items() if k in [0, 1, 2]}
+      phys_gr_ctx = self.promote_ctx(client, self.subdevice, hParent, ctxbufs, virt=False)
       if self.nvdev.chip_name == "GA100":
-        # User VASes are externally owned, so OpenRM initializes the context PAs but deliberately skips VA promotion.
-        # The private golden-image VAS is RM-owned and retains its combined PA+VA promotion above.
-        self.promote_ctx(client, self.subdevice, hParent, ctxbufs, virt=False)
+        # Externally owned VASes require the client to map every local and global channel resource, then bind all of their VAs.
+        # Reuse the golden-image global allocations, replace its local MAIN/PATCH allocations, and add the user PM allocation.
+        self.promote_ctx(client, self.subdevice, hParent, self.grctx_bufs, self.grctx_buf_allocs | phys_gr_ctx, virt=True, phys=False)
       else:
-        phys_gr_ctx = self.promote_ctx(client, self.subdevice, hParent, ctxbufs, virt=False)
         self.promote_ctx(client, self.subdevice, hParent, ctxbufs, phys_gr_ctx, phys=False)
     return obj if hClass != nv_gpu.NV1_ROOT else client
 

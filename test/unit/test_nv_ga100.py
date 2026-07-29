@@ -237,9 +237,15 @@ def test_user_gpfifo_uses_chip_userd_contract(chip_name, userd_size, userd_cache
   assert params.errorNotifierMem.addressSpace == 1
 
 
-@pytest.mark.parametrize(("chip_name", "promotion_count"), (("GA100", 1), ("GA102", 2)))
-def test_user_compute_allocation_preserves_chip_promotion_contract(chip_name, promotion_count):
-  promotions = []
+@pytest.mark.parametrize("chip_name", ("GA100", "GA102"))
+def test_user_compute_allocation_preserves_chip_promotion_contract(chip_name):
+  promotions, user_allocs = [], {0: object(), 1: object(), 2: object()}
+  golden_allocs = {0: object(), 2: object(), 3: object(), 10: object()}
+
+  def promote_ctx(*args, **kwargs):
+    promotions.append((args, kwargs))
+    return user_allocs if kwargs == {"virt": False} else {}
+
   gsp = SimpleNamespace(
     gpfifo_class=nv_gpu.AMPERE_CHANNEL_GPFIFO_A,
     compute_class=nv_gpu.AMPERE_COMPUTE_A,
@@ -253,18 +259,28 @@ def test_user_compute_allocation_preserves_chip_promotion_contract(chip_name, pr
       0: GRBufDesc(size=0x160000, virt=True, phys=True),
       1: GRBufDesc(size=0x5000, virt=True, phys=True),
       2: GRBufDesc(size=0x5000, virt=True, phys=True),
+      3: GRBufDesc(size=0x20000, virt=True, phys=False),
+      10: GRBufDesc(size=0x80000, virt=False, phys=True),
     },
-    promote_ctx=lambda *args, **kwargs: promotions.append((args, kwargs)),
+    grctx_buf_allocs=golden_allocs,
+    promote_ctx=promote_ctx,
   )
 
   result = NV_GSP.rpc_rm_alloc(gsp, 0xCF00000E, nv_gpu.AMPERE_COMPUTE_A, None, client=0xC1000000)
 
   assert result == 0xCF00000F
-  assert len(promotions) == promotion_count
+  assert len(promotions) == 2
   assert promotions[0][0][:3] == (0xC1000000, 0xCF000009, 0xCF00000E)
   assert set(promotions[0][0][3]) == {0, 1, 2}
-  if chip_name == "GA100": assert promotions[0][1] == {"virt": False}
-  else: assert [kwargs for _args, kwargs in promotions] == [{"virt": False}, {"phys": False}]
+  assert promotions[0][1] == {"virt": False}
+  if chip_name == "GA100":
+    assert set(promotions[1][0][3]) == {0, 1, 2, 3, 10}
+    assert promotions[1][0][4] == golden_allocs | user_allocs
+    assert promotions[1][1] == {"virt": True, "phys": False}
+  else:
+    assert set(promotions[1][0][3]) == {0, 1, 2}
+    assert promotions[1][0][4] == user_allocs
+    assert promotions[1][1] == {"phys": False}
 
 
 def test_ga100_flcn_skips_fwsec_frts():
