@@ -40,7 +40,6 @@ def nv_renderer_arch(sm_version:int) -> str:
   return f"sm_{(sm_version>>8)&0xff}{(val>>4) if val > 0xf else val}"
 
 def nv_qmd_sass_version(sm_version:int) -> int:
-  if sm_version == nv_gpu.NV2080_CTRL_GR_INFO_SM_VERSION_8_02: return 0x80
   return ((sm_version & 0xf00) >> 4) | (sm_version & 0xf)
 
 NV_PFAULT_FAULT_TYPE = {dt:name for name,dt in nv_gpu.__dict__.items() if name.startswith("NV_PFAULT_FAULT_TYPE_")}
