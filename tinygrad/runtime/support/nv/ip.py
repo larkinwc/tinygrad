@@ -524,7 +524,7 @@ class NV_GSP(NV_IP):
     res, prom = {}, nv_gpu.NV2080_CTRL_GPU_PROMOTE_CTX_PARAMS(entryCount=len(ctxbufs), engineType=0x1, hChanClient=client, hObject=obj)
     for i,(buf,desc) in enumerate(ctxbufs.items()):
       use_v, use_p = (desc.virt if virt is None else virt), (desc.phys if phys is None else phys)
-      x = (bufs or {}).get(buf, self.nvdev.mm.valloc(desc.size, contiguous=True)) # allocate buffers
+      x = bufs[buf] if bufs is not None and buf in bufs else self.nvdev.mm.valloc(desc.size, contiguous=True)
       prom.promoteEntry[i] = nv_gpu.NV2080_CTRL_GPU_PROMOTE_CTX_BUFFER_ENTRY(bufferId=buf, gpuVirtAddr=x.va_addr if use_v else 0, bInitialize=use_p,
         gpuPhysAddr=x.paddrs[0][0] if use_p else 0, size=desc.size if use_p else 0, physAttr=0x4 if use_p else 0, bNonmapped=(use_p and not use_v))
       res[buf] = x

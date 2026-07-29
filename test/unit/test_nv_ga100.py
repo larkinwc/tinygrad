@@ -1,10 +1,11 @@
 import struct
+from types import SimpleNamespace
 
 import pytest
 
 from tinygrad.runtime import ops_nv
 from tinygrad.runtime.autogen import nv_570 as nv_gpu
-from tinygrad.runtime.support.nv.ip import NV_FLCN_GA100, ga100_gsp_userd_layout, gsp_fw_heap_size, parse_riscv_ucode_desc
+from tinygrad.runtime.support.nv.ip import GRBufDesc, NV_FLCN_GA100, NV_GSP, ga100_gsp_userd_layout, gsp_fw_heap_size, parse_riscv_ucode_desc
 from tinygrad.runtime.support.nv.nvdev import decode_gp102_lmr_vram_mib, get_nv_chip_config, require_ga100_vram_size
 
 
@@ -102,6 +103,23 @@ def test_ga100_heap_scales_with_framebuffer_size():
 
 def test_ga100_gsp_userd_layout_matches_inherited_openrm_hal():
   assert ga100_gsp_userd_layout(32) == (0x200, 0x200, 2)
+
+
+def test_context_repromotion_reuses_buffers_without_allocating():
+  mapping = SimpleNamespace(va_addr=0x100200000, paddrs=[(0x80000000, 0x20000)])
+  controls = []
+  gsp = SimpleNamespace(
+    nvdev=SimpleNamespace(mm=SimpleNamespace(valloc=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected allocation")))),
+    rpc_rm_control=lambda **kwargs: controls.append(kwargs),
+  )
+
+  result = NV_GSP.promote_ctx(gsp, 0xC1000000, 0xCF000009, 0xCF00000E,
+    {0: GRBufDesc(size=0x20000, virt=True, phys=True)}, bufs={0: mapping}, phys=False)
+
+  assert result == {0: mapping}
+  assert len(controls) == 1
+  entry = controls[0]["params"].promoteEntry[0]
+  assert (entry.gpuPhysAddr, entry.gpuVirtAddr, entry.bInitialize) == (0, mapping.va_addr, 0)
 
 
 def test_ga100_flcn_skips_fwsec_frts():
