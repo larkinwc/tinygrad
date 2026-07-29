@@ -1,13 +1,46 @@
 from __future__ import annotations
-import time, functools, tinygrad.runtime.autogen.nv_regs
+import time, functools, dataclasses, tinygrad.runtime.autogen.nv_regs
 from tinygrad.helpers import getenv, DEBUG, getbits, round_up
-from tinygrad.runtime.autogen import pci
+from tinygrad.runtime.autogen import pci, nv_570 as nv_gpu
 from tinygrad.runtime.support.memory import TLSFAllocator, MemoryManager, AddrSpace
-from tinygrad.runtime.support.nv.ip import NV_FLCN, NV_FLCN_COT, NV_GSP
+from tinygrad.runtime.support.nv.ip import NV_FLCN, NV_FLCN_GA100, NV_FLCN_COT, NV_GSP
 from tinygrad.runtime.support.system import PCIDevice
 from tinygrad.runtime.support.hcq import MMIOInterface
 
 NV_DEBUG = getenv("NV_DEBUG", 0)
+
+@dataclasses.dataclass(frozen=True)
+class NVChipConfig:
+  name:str
+  boot_fw_name:str
+  gsp_fw_name:str
+  gsp_signature_section:str
+  frts_size:int
+  fixed_fw_heap_size:int
+  fw_heap_os_size:int
+  fw_heap_min_mb:int
+  fw_heap_max_mb:int
+  gpfifo_class:int
+  compute_class:int
+  dma_class:int
+
+  @property
+  def uses_fwsec_frts(self) -> bool: return self.frts_size != 0
+
+def get_nv_chip_config(architecture:int, implementation:int) -> NVChipConfig:
+  name = {0x17: "GA1", 0x19: "AD1", 0x1b: "GB2"}[architecture] + f"{implementation:02d}"
+  if name == "GA100":
+    return NVChipConfig(name=name, boot_fw_name="ga100", gsp_fw_name="tu102", gsp_signature_section=".fwsignature_ga100",
+      frts_size=0, fixed_fw_heap_size=0, fw_heap_os_size=0, fw_heap_min_mb=64, fw_heap_max_mb=256,
+      gpfifo_class=nv_gpu.AMPERE_CHANNEL_GPFIFO_A, compute_class=nv_gpu.AMPERE_COMPUTE_A, dma_class=nv_gpu.AMPERE_DMA_COPY_A)
+  boot_fw_name = {"GB2": "gb202", "AD1": "ad102", "GA1": "ga102"}[name[:3]]
+  gpfifo, compute, dma = nv_gpu.AMPERE_CHANNEL_GPFIFO_A, nv_gpu.AMPERE_COMPUTE_B, nv_gpu.AMPERE_DMA_COPY_B
+  if name.startswith("AD"): compute = nv_gpu.ADA_COMPUTE_A
+  elif name.startswith("GB"):
+    gpfifo, compute, dma = nv_gpu.BLACKWELL_CHANNEL_GPFIFO_A, nv_gpu.BLACKWELL_COMPUTE_B, nv_gpu.BLACKWELL_DMA_COPY_B
+  return NVChipConfig(name=name, boot_fw_name=boot_fw_name, gsp_fw_name="ga102", gsp_signature_section=f".fwsignature_{name[:4].lower()}x",
+    frts_size=1 << 20, fixed_fw_heap_size=0x8100000, fw_heap_os_size=22 << 20, fw_heap_min_mb=88, fw_heap_max_mb=280,
+    gpfifo_class=gpfifo, compute_class=compute, dma_class=dma)
 
 class NVReg:
   def __init__(self, nvdev, base, off, fields=None): self.nvdev, self.base, self.off, self.fields = nvdev, base, off, fields
@@ -111,11 +144,12 @@ class NVDev:
     self.pci_dev.write_config_flush(pci.PCI_COMMAND, self.pci_dev.read_config(pci.PCI_COMMAND, 2) | pci.PCI_COMMAND_MASTER, 2)
     self.chip_id = self.reg("NV_PMC_BOOT_0").read()
     self.chip_details = self.reg("NV_PMC_BOOT_42").read_bitfields()
-    self.chip_name = {0x17: "GA1", 0x19: "AD1", 0x1b: "GB2"}[self.chip_details['architecture']] + f"{self.chip_details['implementation']:02d}"
-    self.fw_name = {"GB2": "gb202", "AD1": "ad102", "GA1": "ga102"}[self.chip_name[:3]]
+    self.chip_config = get_nv_chip_config(self.chip_details['architecture'], self.chip_details['implementation'])
+    self.chip_name, self.boot_fw_name = self.chip_config.name, self.chip_config.boot_fw_name
     self.mmu_ver, self.fmc_boot = (3, True) if self.chip_details['architecture'] >= 0x1a else (2, False)
 
-    self.flcn:NV_FLCN|NV_FLCN_COT = NV_FLCN_COT(self) if self.fmc_boot else NV_FLCN(self)
+    self.flcn:NV_FLCN|NV_FLCN_COT = (
+      NV_FLCN_COT if self.fmc_boot else NV_FLCN if self.chip_config.uses_fwsec_frts else NV_FLCN_GA100)(self)
     self.gsp:NV_GSP = NV_GSP(self)
 
     self.flcn.wait_for_reset()

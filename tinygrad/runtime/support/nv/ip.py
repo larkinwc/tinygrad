@@ -10,6 +10,27 @@ from tinygrad.runtime.support.elf import elf_loader
 @dataclasses.dataclass(frozen=True)
 class GRBufDesc: size:int; virt:bool; phys:bool; local:bool=False # noqa: E702
 
+def gsp_fw_heap_size(fb_size:int, os_size:int, min_mb:int, max_mb:int) -> int:
+  fb_size_gb = ceildiv(fb_size, 1 << 30)
+  size = os_size + (8 << 20) + round_up((96 << 10) * fb_size_gb, 1 << 20) + (96 << 20)
+  return max(min_mb << 20, min(max_mb << 20, size))
+
+BOOTER_LOAD_FW_SHA256 = {
+  "ga100": "46bafe32b2d1f59713fc8369b5e59e7267d7da4413ad6486aef69d50daa764cd",
+  "ga102": "4497e3eff7e95c774b8a569d17b27c08c9650158d10b229d2be81cdcad9a085b",
+  "ad102": "8b293e19b637c5e22c87a2428d1c71bb13e0904e8a88ac6b3c6c1f2679c6e37a",
+}
+BOOTLOADER_FW_SHA256 = {
+  "ga100": "e7670009c98791b8030953ab1d22ecdbf3e073744d928fa15f6267de4eceaad3",
+  "ga102": "82428f532240727e95bb3083fbaaba9b2cc7b937314323f2d546ce7245f27fad",
+  "ad102": "65ab2e6b6e0fca95365c4deac79a34582abcfeb15b6ae234138f22e7183118a8",
+  "gb202": "d40b48e431d1707dc77af3605db358ed7a32ebfc2830eb74de2eddb4d3025071",
+}
+GSP_FW_SHA256 = {
+  "ga102": "a8c3ebeed280323aedb51c061f321e73379cce7a9ae643a33dd03915df027f7f",
+  "tu102": "3052aee2872182a14d8d7c069e3a14fe4642405894b24692c4aca4101dfb1809",
+}
+
 class NV_IP:
   def __init__(self, nvdev): self.nvdev = nvdev
   def init_sw(self): pass # Prepare sw/allocations for this IP
@@ -95,7 +116,8 @@ class NV_FLCN(NV_IP):
     wait_cond(lambda _: self.nvdev.NV_PGC6_AON_SECURE_SCRATCH_GROUP_05_PRIV_LEVEL_MASK.read_bitfields()['read_protection_level0'] == 1 and
                         self.nvdev.NV_PGC6_AON_SECURE_SCRATCH_GROUP_05[0].read() & 0xff == 0xff, "waiting for reset")
 
-  def init_sw(self):
+  def init_regs(self):
+    # GA100 inherits TU102's GSP boot path; the available GA102 tables use the same Falcon/GSP offsets.
     self.nvdev.include("dev_gsp", "ga102")
     self.nvdev.include("dev_falcon_v4", "ga102")
     self.nvdev.include("dev_riscv_pri", "ga102")
@@ -104,6 +126,8 @@ class NV_FLCN(NV_IP):
     self.nvdev.include("dev_sec_pri", "ga102")
     self.nvdev.include("dev_bus", "tu102")
 
+  def init_sw(self):
+    self.init_regs()
     self.prep_ucode()
     self.prep_booter()
 
@@ -169,9 +193,8 @@ class NV_FLCN(NV_IP):
     _, self.frts_image_paddr, _ = __patch(0x15, bytes(frts_cmd))
 
   def prep_booter(self):
-    sha = {"ga102":"4497e3eff7e95c774b8a569d17b27c08c9650158d10b229d2be81cdcad9a085b",
-           "ad102":"8b293e19b637c5e22c87a2428d1c71bb13e0904e8a88ac6b3c6c1f2679c6e37a"}[self.nvdev.fw_name]
-    h = nv.struct_nvfw_bin_hdr.from_buffer_copy(b:=fetch_fw(f"nvidia/{self.nvdev.fw_name}/gsp", "booter_load-570.144.bin", sha))
+    sha = BOOTER_LOAD_FW_SHA256[self.nvdev.boot_fw_name]
+    h = nv.struct_nvfw_bin_hdr.from_buffer_copy(b:=fetch_fw(f"nvidia/{self.nvdev.boot_fw_name}/gsp", "booter_load-570.144.bin", sha))
     lh = nv.struct_nvfw_hs_load_header_v2.from_buffer_copy(b, (hs:=nv.struct_nvfw_hs_header_v2.from_buffer_copy(b, h.header_offset)).header_offset)
     app = nv.struct_nvfw_hs_load_header_v2_app.from_buffer_copy(b, hs.header_offset + ctypes.sizeof(nv.struct_nvfw_hs_load_header_v2))
 
@@ -183,9 +206,7 @@ class NV_FLCN(NV_IP):
     _, self.booter_image_paddr, _ = self.nvdev._alloc_boot_mem(len(patched_image), data=patched_image, sysmem=False)
     self.booter_data_off, self.booter_data_sz, self.booter_code_off, self.booter_code_sz = lh.os_data_offset, lh.os_data_size, app.offset, app.size
 
-  def init_hw(self):
-    self.falcon, self.sec2 = 0x00110000, 0x00840000
-
+  def init_frts(self):
     self.reset(self.falcon)
     self.execute_hs(self.falcon, self.frts_image_paddr, code_off=0x0, data_off=self.desc_v3.IMEMLoadSize,
       imemPa=self.desc_v3.IMEMPhysBase, imemVa=self.desc_v3.IMEMVirtBase, imemSz=self.desc_v3.IMEMLoadSize,
@@ -193,6 +214,9 @@ class NV_FLCN(NV_IP):
       pkc_off=self.desc_v3.PKCDataOffset, engid=self.desc_v3.EngineIdMask, ucodeid=self.desc_v3.UcodeId)
     assert self.nvdev.NV_PFB_PRI_MMU_WPR2_ADDR_HI.read() != 0, "WPR2 is not initialized"
 
+  def init_hw(self):
+    self.falcon, self.sec2 = 0x00110000, 0x00840000
+    self.init_frts()
     self.reset(self.falcon, riscv=True)
 
     # set up the mailbox
@@ -282,6 +306,15 @@ class NV_FLCN(NV_IP):
       wait_cond(lambda: self.nvdev.NV_PRISCV_RISCV_BCR_CTRL.with_base(base).read_bitfields()['valid'], msg="RISCV core not booted")
       self.nvdev.NV_PFALCON_FALCON_RM.with_base(base).write(self.nvdev.chip_id)
 
+class NV_FLCN_GA100(NV_FLCN):
+  def init_sw(self):
+    self.init_regs()
+    self.prep_booter()
+
+  def init_frts(self):
+    # GA100 inherits the TU102 boot flow and has no FWSEC FRTS region.
+    return
+
 class NV_FLCN_COT(NV_IP):
   def wait_for_reset(self):
     self.nvdev.include("dev_therm", "gb202")
@@ -300,7 +333,7 @@ class NV_FLCN_COT(NV_IP):
     self.init_fmc_image()
 
   def init_fmc_image(self):
-    _, sections, _ = elf_loader(fetch_fw(f"nvidia/{self.nvdev.fw_name}/gsp", "fmc-570.144.bin",
+    _, sections, _ = elf_loader(fetch_fw(f"nvidia/{self.nvdev.boot_fw_name}/gsp", "fmc-570.144.bin",
                                          "cb59a35c1d4bd1274d7267fd10243c29f843ff41c851b9cbd59f5af2ddd7fece"))
     def _section(s): return next((sh.content for sh in sections if sh.name == s))
     self.fmc_booter_image, self.fmc_booter_hash = _section("image"), memoryview(_section("hash")).cast('I')
@@ -354,11 +387,8 @@ class NV_GSP(NV_IP):
     self.rpc_set_gsp_system_info()
     self.rpc_set_registry_table()
 
-    self.gpfifo_class, self.compute_class, self.dma_class = nv_gpu.AMPERE_CHANNEL_GPFIFO_A, nv_gpu.AMPERE_COMPUTE_B, nv_gpu.AMPERE_DMA_COPY_B
-    match self.nvdev.chip_name[:2]:
-      case "AD": self.compute_class = nv_gpu.ADA_COMPUTE_A
-      case "GB":
-        self.gpfifo_class,self.compute_class,self.dma_class=nv_gpu.BLACKWELL_CHANNEL_GPFIFO_A,nv_gpu.BLACKWELL_COMPUTE_B,nv_gpu.BLACKWELL_DMA_COPY_B
+    config = self.nvdev.chip_config
+    self.gpfifo_class, self.compute_class, self.dma_class = config.gpfifo_class, config.compute_class, config.dma_class
 
   def init_rm_args(self, queue_size=0x40000):
     # Alloc queues
@@ -398,9 +428,10 @@ class NV_GSP(NV_IP):
     libos_args_view[:sum(ctypes.sizeof(s) for s in libos_structs)] = b''.join(bytes(s) for s in libos_structs)
 
   def init_gsp_image(self):
-    _, sections, _ = elf_loader(fetch_fw("nvidia/ga102/gsp", "gsp-570.144.bin", "a8c3ebeed280323aedb51c061f321e73379cce7a9ae643a33dd03915df027f7f"))
+    sha = GSP_FW_SHA256[self.nvdev.chip_config.gsp_fw_name]
+    _, sections, _ = elf_loader(fetch_fw(f"nvidia/{self.nvdev.chip_config.gsp_fw_name}/gsp", "gsp-570.144.bin", sha))
     self.gsp_image = next((sh.content for sh in sections if sh.name == ".fwimage"))
-    signature = next((sh.content for sh in sections if sh.name == (f".fwsignature_{self.nvdev.chip_name[:4].lower()}x")))
+    signature = next((sh.content for sh in sections if sh.name == self.nvdev.chip_config.gsp_signature_section))
 
     # Build radix3
     npages = [0, 0, 0, round_up(len(self.gsp_image), 0x1000) // 0x1000]
@@ -422,10 +453,8 @@ class NV_GSP(NV_IP):
     self.gsp_signature_bar1 = gsp_sig_addrs[0]
 
   def init_boot_binary_image(self):
-    sha = {"ga102":"82428f532240727e95bb3083fbaaba9b2cc7b937314323f2d546ce7245f27fad",
-           "ad102":"65ab2e6b6e0fca95365c4deac79a34582abcfeb15b6ae234138f22e7183118a8",
-           "gb202":"d40b48e431d1707dc77af3605db358ed7a32ebfc2830eb74de2eddb4d3025071"}[self.nvdev.fw_name]
-    h = nv.struct_nvfw_bin_hdr.from_buffer_copy(b:=fetch_fw(f"nvidia/{self.nvdev.fw_name}/gsp", "bootloader-570.144.bin", sha))
+    sha = BOOTLOADER_FW_SHA256[self.nvdev.boot_fw_name]
+    h = nv.struct_nvfw_bin_hdr.from_buffer_copy(b:=fetch_fw(f"nvidia/{self.nvdev.boot_fw_name}/gsp", "bootloader-570.144.bin", sha))
     self.booter_image, self.booter_desc = b[h.data_offset:h.data_offset+h.data_size], nv.RM_RISCV_UCODE_DESC.from_buffer_copy(b, h.header_offset)
     _, _, booter_addrs = self.nvdev._alloc_boot_mem(len(self.booter_image), data=self.booter_image)
     self.booter_bar1 = booter_addrs[0]
@@ -444,12 +473,17 @@ class NV_GSP(NV_IP):
       m = nv.GspFwWprMeta(**common, vgaWorkspaceSize=0x20000, pmuReservedSize=0x1820000, nonWprHeapSize=0x220000, gspFwHeapSize=0x8700000,
         frtsSize=0x100000)
     else:
+      config = self.nvdev.chip_config
+      frts_sz = config.frts_size
+      gsp_heap_sz = config.fixed_fw_heap_size or gsp_fw_heap_size(
+        self.nvdev.vram_size, config.fw_heap_os_size, config.fw_heap_min_mb, config.fw_heap_max_mb)
       m = nv.GspFwWprMeta(**common, vgaWorkspaceSize=(vga_sz:=0x100000), vgaWorkspaceOffset=(vga_off:=self.nvdev.vram_size-vga_sz),
-        gspFwWprEnd=vga_off, frtsSize=(frts_sz:=0x100000), frtsOffset=(frts_off:=vga_off-frts_sz), bootBinOffset=(boot_off:=frts_off-boot_sz),
-        gspFwOffset=(gsp_off:=round_down(boot_off-radix3_sz, 0x10000)), gspFwHeapSize=(gsp_heap_sz:=0x8100000), fbSize=self.nvdev.vram_size,
+        gspFwWprEnd=vga_off, frtsSize=frts_sz, frtsOffset=(frts_off:=vga_off-frts_sz), bootBinOffset=(boot_off:=frts_off-boot_sz),
+        gspFwOffset=(gsp_off:=round_down(boot_off-radix3_sz, 0x10000)), gspFwHeapSize=gsp_heap_sz, fbSize=self.nvdev.vram_size,
         gspFwHeapOffset=(gsp_heap_off:=round_down(gsp_off-gsp_heap_sz, 0x100000)), gspFwWprStart=(wpr_st:=round_down(gsp_heap_off-0x1000, 0x100000)),
         nonWprHeapSize=(non_wpr_sz:=0x100000), nonWprHeapOffset=(non_wpr_off:=round_down(wpr_st-non_wpr_sz, 0x100000)), gspFwRsvdStart=non_wpr_off)
-      assert self.nvdev.flcn.frts_offset == m.frtsOffset, f"FRTS mismatch: {self.nvdev.flcn.frts_offset} != {m.frtsOffset}"
+      if self.nvdev.chip_config.uses_fwsec_frts:
+        assert self.nvdev.flcn.frts_offset == m.frtsOffset, f"FRTS mismatch: {self.nvdev.flcn.frts_offset} != {m.frtsOffset}"
     self.wpr_meta, _, wpr_meta_addrs = self.nvdev._alloc_boot_mem(ctypes.sizeof(type(m)), data=bytes(m))
     self.wpr_meta_sysmem = wpr_meta_addrs[0]
 
