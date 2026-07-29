@@ -292,7 +292,7 @@ def test_user_gpfifo_uses_chip_userd_contract(chip_name, userd_size, userd_cache
 @pytest.mark.parametrize("chip_name", ("GA100", "GA102"))
 def test_user_compute_allocation_preserves_chip_promotion_contract(chip_name):
   promotions, user_allocs = [], {0: object(), 1: object(), 2: object()}
-  golden_allocs = {0: object(), 2: object(), 3: object(), 10: object()}
+  golden_allocs = {0: object(), 2: object(), 3: object(), 9: object(), 10: object(), 11: object()}
 
   def promote_ctx(*args, **kwargs):
     promotions.append((args, kwargs))
@@ -313,6 +313,8 @@ def test_user_compute_allocation_preserves_chip_promotion_contract(chip_name):
       2: GRBufDesc(size=0x5000, virt=True, phys=True),
       3: GRBufDesc(size=0x20000, virt=True, phys=False),
       10: GRBufDesc(size=0x80000, virt=False, phys=True),
+      9: GRBufDesc(size=0x10000, virt=True, phys=True),
+      11: GRBufDesc(size=0x80000, virt=True, phys=True),
     },
     grctx_buf_allocs=golden_allocs,
     promote_ctx=promote_ctx,
@@ -326,8 +328,8 @@ def test_user_compute_allocation_preserves_chip_promotion_contract(chip_name):
   assert set(promotions[0][0][3]) == {0, 1, 2}
   assert promotions[0][1] == {"virt": False}
   if chip_name == "GA100":
-    assert set(promotions[1][0][3]) == {0, 1, 2, 3, 10}
-    assert promotions[1][0][4] == golden_allocs | user_allocs
+    assert set(promotions[1][0][3]) == {0, 1, 2, 9, 10, 11}
+    assert promotions[1][0][4] == {k:(golden_allocs | user_allocs)[k] for k in {0, 1, 2, 9, 10, 11}}
     assert promotions[1][1] == {"virt": True, "phys": False}
   else:
     assert set(promotions[1][0][3]) == {0, 1, 2}

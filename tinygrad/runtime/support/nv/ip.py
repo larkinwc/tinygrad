@@ -631,9 +631,11 @@ class NV_GSP(NV_IP):
       ctxbufs = {k:v for k,v in self.grctx_bufs.items() if k in [0, 1, 2]}
       phys_gr_ctx = self.promote_ctx(client, self.subdevice, hParent, ctxbufs, virt=False)
       if self.nvdev.chip_name == "GA100":
-        # Externally owned VASes require the client to map every local and global channel resource, then bind all of their VAs.
-        # Reuse the golden-image global allocations, replace its local MAIN/PATCH allocations, and add the user PM allocation.
-        self.promote_ctx(client, self.subdevice, hParent, self.grctx_bufs, self.grctx_buf_allocs | phys_gr_ctx, virt=True, phys=False)
+        # Bind the exact compute/non-3D resource set returned by GR_GET_CTX_BUFFER_INFO: local MAIN/PATCH/PM plus the
+        # shared FECS event and privileged-access maps. Promoting 3D-only global buffers changes the compute context contract.
+        retained_ctxbufs = {k:v for k,v in self.grctx_bufs.items() if k in [0, 1, 2, 9, 10, 11]}
+        ctxbuf_allocs = self.grctx_buf_allocs | phys_gr_ctx
+        self.promote_ctx(client, self.subdevice, hParent, retained_ctxbufs, {k:ctxbuf_allocs[k] for k in retained_ctxbufs}, virt=True, phys=False)
       else:
         self.promote_ctx(client, self.subdevice, hParent, ctxbufs, phys_gr_ctx, phys=False)
     return obj if hClass != nv_gpu.NV1_ROOT else client
