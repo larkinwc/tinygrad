@@ -626,9 +626,9 @@ class NV_GSP(NV_IP):
     if hClass == self.compute_class and client != self.priv_root:
       ctxbufs = {k:v for k,v in self.grctx_bufs.items() if k in [0, 1, 2]}
       if self.nvdev.chip_name == "GA100":
-        # OpenRM composes PA initialization and VA promotion in one entry/control. GA100's private combined promotion succeeds,
-        # while a second user virtual-only control stalls, so use the same combined contract for its user context.
-        self.promote_ctx(client, self.subdevice, hParent, ctxbufs)
+        # User VASes are externally owned, so OpenRM initializes the context PAs but deliberately skips VA promotion.
+        # The private golden-image VAS is RM-owned and retains its combined PA+VA promotion above.
+        self.promote_ctx(client, self.subdevice, hParent, ctxbufs, virt=False)
       else:
         phys_gr_ctx = self.promote_ctx(client, self.subdevice, hParent, ctxbufs, virt=False)
         self.promote_ctx(client, self.subdevice, hParent, ctxbufs, phys_gr_ctx, phys=False)

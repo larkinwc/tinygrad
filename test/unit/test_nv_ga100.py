@@ -148,7 +148,7 @@ def test_user_compute_allocation_preserves_chip_promotion_contract(chip_name, pr
   assert len(promotions) == promotion_count
   assert promotions[0][0][:3] == (0xC1000000, 0xCF000009, 0xCF00000E)
   assert set(promotions[0][0][3]) == {0, 1, 2}
-  if chip_name == "GA100": assert promotions[0][1] == {}
+  if chip_name == "GA100": assert promotions[0][1] == {"virt": False}
   else: assert [kwargs for _args, kwargs in promotions] == [{"virt": False}, {"phys": False}]
 
 
