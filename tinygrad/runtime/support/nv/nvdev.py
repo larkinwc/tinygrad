@@ -42,10 +42,16 @@ def get_nv_chip_config(architecture:int, implementation:int) -> NVChipConfig:
     frts_size=1 << 20, fixed_fw_heap_size=0x8100000, fw_heap_os_size=22 << 20, fw_heap_min_mb=88, fw_heap_max_mb=280,
     gpfifo_class=gpfifo, compute_class=compute, dma_class=dma)
 
+def decode_gp102_lmr_vram_mib(value:int) -> int:
+  lower_scale, lower_magnitude = getbits(value, 0, 3), getbits(value, 4, 9)
+  vram_mib = lower_magnitude << lower_scale
+  return vram_mib // 16 * 15 if getbits(value, 30, 30) else vram_mib
+
 def require_ga100_vram_size(config:NVChipConfig, actual_mib:int, expected_mib:int) -> None:
   if config.name != "GA100": return
   if expected_mib <= 0: raise RuntimeError("GA100 driverless boot requires NV_EXPECTED_VRAM_MIB")
-  if actual_mib != expected_mib: raise RuntimeError(f"GA100 VRAM preflight mismatch: expected {expected_mib} MiB, scratch reports {actual_mib} MiB")
+  if actual_mib != expected_mib:
+    raise RuntimeError(f"GA100 VRAM preflight mismatch: expected {expected_mib} MiB, capacity source reports {actual_mib} MiB")
 
 class NVReg:
   def __init__(self, nvdev, base, off, fields=None): self.nvdev, self.base, self.off, self.fields = nvdev, base, off, fields
@@ -169,13 +175,17 @@ class NVDev:
     self.pte_t, self.pde_t, self.dual_pde_t = [self.__dict__[name] for name in [f'NV_MMU_VER{self.mmu_ver}_PTE', f'NV_MMU_VER{self.mmu_ver}_PDE',
                                                                                 f'NV_MMU_VER{self.mmu_ver}_DUAL_PDE']]
 
-    vram_mib = self.reg("NV_PGC6_AON_SECURE_SCRATCH_GROUP_42").read()
     if self.chip_name == "GA100":
-      expected_mib = getenv("NV_EXPECTED_VRAM_MIB", 0)
+      # OpenRM maps GA100 to kmemsysReadUsableFbSize_GP102, which decodes
+      # NV_PFB_PRI_MMU_LOCAL_MEMORY_RANGE. SCRATCH_GROUP_42 is GA102-only.
+      lmr = self.rreg(0x00100CE0)
+      vram_mib, expected_mib = decode_gp102_lmr_vram_mib(lmr), getenv("NV_EXPECTED_VRAM_MIB", 0)
       print(f"nv {self.devfmt}: GA100 preflight BOOT_0={self.chip_id:#010x} BOOT_42={self.chip_boot42:#010x} "
             f"architecture={self.chip_details['architecture']:#x} implementation={self.chip_details['implementation']:#x} "
-            f"SCRATCH_GROUP_42={vram_mib:#x} expected_mib={expected_mib}", flush=True)
+            f"LOCAL_MEMORY_RANGE={lmr:#010x} decoded_mib={vram_mib} expected_mib={expected_mib}", flush=True)
       require_ga100_vram_size(self.chip_config, vram_mib, expected_mib)
+    else:
+      vram_mib = self.reg("NV_PGC6_AON_SECURE_SCRATCH_GROUP_42").read()
     self.vram_size = vram_mib << 20
 
     self.vram, self.mmio = self.pci_dev.map_bar(1), self.pci_dev.map_bar(0, fmt='I')

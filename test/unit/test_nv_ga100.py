@@ -5,7 +5,7 @@ import pytest
 from tinygrad.runtime import ops_nv
 from tinygrad.runtime.autogen import nv_570 as nv_gpu
 from tinygrad.runtime.support.nv.ip import NV_FLCN_GA100, gsp_fw_heap_size, parse_riscv_ucode_desc
-from tinygrad.runtime.support.nv.nvdev import get_nv_chip_config, require_ga100_vram_size
+from tinygrad.runtime.support.nv.nvdev import decode_gp102_lmr_vram_mib, get_nv_chip_config, require_ga100_vram_size
 
 
 def test_ga100_chip_config_uses_tu102_gsp():
@@ -32,6 +32,13 @@ def test_ga102_chip_config_is_unchanged():
   assert config.fixed_fw_heap_size == 0x8100000
 
 
+def test_ga100_vram_size_decodes_inherited_gp102_local_memory_range():
+  assert decode_gp102_lmr_vram_mib(0x208) == 8192
+  assert decode_gp102_lmr_vram_mib(0x20B) == 65536
+  assert decode_gp102_lmr_vram_mib(0x28B) == 81920
+  assert decode_gp102_lmr_vram_mib(0x40000208) == 7680
+
+
 def test_ga100_vram_preflight_is_fail_closed():
   ga100, ga102 = get_nv_chip_config(0x17, 0x00), get_nv_chip_config(0x17, 0x02)
 
@@ -39,7 +46,7 @@ def test_ga100_vram_preflight_is_fail_closed():
   require_ga100_vram_size(ga102, 0, 0)
   with pytest.raises(RuntimeError, match="requires NV_EXPECTED_VRAM_MIB"):
     require_ga100_vram_size(ga100, 8192, 0)
-  with pytest.raises(RuntimeError, match="expected 65536 MiB, scratch reports 8192 MiB"):
+  with pytest.raises(RuntimeError, match="expected 65536 MiB, capacity source reports 8192 MiB"):
     require_ga100_vram_size(ga100, 8192, 65536)
 
 
