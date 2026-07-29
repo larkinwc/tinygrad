@@ -31,6 +31,33 @@ GSP_FW_SHA256 = {
   "tu102": "3052aee2872182a14d8d7c069e3a14fe4642405894b24692c4aca4101dfb1809",
 }
 
+@dataclasses.dataclass(frozen=True)
+class RiscvUcodeDesc:
+  version:int
+  bootloader_offset:int
+  bootloader_size:int
+  bootloader_param_offset:int
+  bootloader_param_size:int
+  app_version:int
+  manifest_offset:int
+  manifest_size:int
+  monitor_data_offset:int
+  monitor_data_size:int
+  monitor_code_offset:int
+  monitor_code_size:int
+
+def parse_riscv_ucode_desc(blob:bytes, header_offset:int, payload_size:int) -> RiscvUcodeDesc:
+  desc = struct.unpack_from("<15I", blob, header_offset)
+  if desc[0] not in {4, 5}: raise RuntimeError(f"Unsupported RISC-V ucode descriptor version {desc[0]}")
+  for name, offset, size in [
+    ("bootloader", desc[1], desc[2]), ("bootloader parameters", desc[3], desc[4]),
+    ("manifest", desc[8], desc[9]), ("monitor data", desc[10], desc[11]), ("monitor code", desc[12], desc[13]),
+  ]:
+    if offset + size > payload_size: raise RuntimeError(f"RISC-V {name} range exceeds firmware payload")
+  return RiscvUcodeDesc(version=desc[0], bootloader_offset=desc[1], bootloader_size=desc[2],
+    bootloader_param_offset=desc[3], bootloader_param_size=desc[4], app_version=desc[7], manifest_offset=desc[8], manifest_size=desc[9],
+    monitor_data_offset=desc[10], monitor_data_size=desc[11], monitor_code_offset=desc[12], monitor_code_size=desc[13])
+
 class NV_IP:
   def __init__(self, nvdev): self.nvdev = nvdev
   def init_sw(self): pass # Prepare sw/allocations for this IP
@@ -313,6 +340,7 @@ class NV_FLCN_GA100(NV_FLCN):
 
   def init_frts(self):
     # GA100 inherits the TU102 boot flow and has no FWSEC FRTS region.
+    # GA100 also binds OpenRM's TU102 RISC-V bootstrap HAL.
     return
 
 class NV_FLCN_COT(NV_IP):
@@ -455,7 +483,8 @@ class NV_GSP(NV_IP):
   def init_boot_binary_image(self):
     sha = BOOTLOADER_FW_SHA256[self.nvdev.boot_fw_name]
     h = nv.struct_nvfw_bin_hdr.from_buffer_copy(b:=fetch_fw(f"nvidia/{self.nvdev.boot_fw_name}/gsp", "bootloader-570.144.bin", sha))
-    self.booter_image, self.booter_desc = b[h.data_offset:h.data_offset+h.data_size], nv.RM_RISCV_UCODE_DESC.from_buffer_copy(b, h.header_offset)
+    self.booter_image = b[h.data_offset:h.data_offset+h.data_size]
+    self.booter_desc = parse_riscv_ucode_desc(b, h.header_offset, h.data_size)
     _, _, booter_addrs = self.nvdev._alloc_boot_mem(len(self.booter_image), data=self.booter_image)
     self.booter_bar1 = booter_addrs[0]
 
@@ -466,8 +495,8 @@ class NV_GSP(NV_IP):
     common = {'sizeOfBootloader':(boot_sz:=len(self.booter_image)), 'sysmemAddrOfBootloader':self.booter_bar1,
       'sizeOfRadix3Elf':(radix3_sz:=len(self.gsp_image)), 'sysmemAddrOfRadix3Elf': self.gsp_radix3_addrs[0],
       'sizeOfSignature': 0x1000, 'sysmemAddrOfSignature': self.gsp_signature_bar1,
-      'bootloaderCodeOffset': self.booter_desc.monitorCodeOffset, 'bootloaderDataOffset': self.booter_desc.monitorDataOffset,
-      'bootloaderManifestOffset': self.booter_desc.manifestOffset, 'revision':nv.GSP_FW_WPR_META_REVISION, 'magic':nv.GSP_FW_WPR_META_MAGIC}
+      'bootloaderCodeOffset': self.booter_desc.monitor_code_offset, 'bootloaderDataOffset': self.booter_desc.monitor_data_offset,
+      'bootloaderManifestOffset': self.booter_desc.manifest_offset, 'revision':nv.GSP_FW_WPR_META_REVISION, 'magic':nv.GSP_FW_WPR_META_MAGIC}
 
     if self.nvdev.fmc_boot:
       m = nv.GspFwWprMeta(**common, vgaWorkspaceSize=0x20000, pmuReservedSize=0x1820000, nonWprHeapSize=0x220000, gspFwHeapSize=0x8700000,

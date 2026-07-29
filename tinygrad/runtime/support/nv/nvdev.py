@@ -42,6 +42,11 @@ def get_nv_chip_config(architecture:int, implementation:int) -> NVChipConfig:
     frts_size=1 << 20, fixed_fw_heap_size=0x8100000, fw_heap_os_size=22 << 20, fw_heap_min_mb=88, fw_heap_max_mb=280,
     gpfifo_class=gpfifo, compute_class=compute, dma_class=dma)
 
+def require_ga100_vram_size(config:NVChipConfig, actual_mib:int, expected_mib:int) -> None:
+  if config.name != "GA100": return
+  if expected_mib <= 0: raise RuntimeError("GA100 driverless boot requires NV_EXPECTED_VRAM_MIB")
+  if actual_mib != expected_mib: raise RuntimeError(f"GA100 VRAM preflight mismatch: expected {expected_mib} MiB, scratch reports {actual_mib} MiB")
+
 class NVReg:
   def __init__(self, nvdev, base, off, fields=None): self.nvdev, self.base, self.off, self.fields = nvdev, base, off, fields
 
@@ -143,7 +148,9 @@ class NVDev:
 
     self.pci_dev.write_config_flush(pci.PCI_COMMAND, self.pci_dev.read_config(pci.PCI_COMMAND, 2) | pci.PCI_COMMAND_MASTER, 2)
     self.chip_id = self.reg("NV_PMC_BOOT_0").read()
-    self.chip_details = self.reg("NV_PMC_BOOT_42").read_bitfields()
+    boot42 = self.reg("NV_PMC_BOOT_42")
+    self.chip_boot42 = boot42.read()
+    self.chip_details = boot42.decode(self.chip_boot42)
     self.chip_config = get_nv_chip_config(self.chip_details['architecture'], self.chip_details['implementation'])
     self.chip_name, self.boot_fw_name = self.chip_config.name, self.chip_config.boot_fw_name
     self.mmu_ver, self.fmc_boot = (3, True) if self.chip_details['architecture'] >= 0x1a else (2, False)
@@ -162,7 +169,14 @@ class NVDev:
     self.pte_t, self.pde_t, self.dual_pde_t = [self.__dict__[name] for name in [f'NV_MMU_VER{self.mmu_ver}_PTE', f'NV_MMU_VER{self.mmu_ver}_PDE',
                                                                                 f'NV_MMU_VER{self.mmu_ver}_DUAL_PDE']]
 
-    self.vram_size = self.reg("NV_PGC6_AON_SECURE_SCRATCH_GROUP_42").read() << 20
+    vram_mib = self.reg("NV_PGC6_AON_SECURE_SCRATCH_GROUP_42").read()
+    if self.chip_name == "GA100":
+      expected_mib = getenv("NV_EXPECTED_VRAM_MIB", 0)
+      print(f"nv {self.devfmt}: GA100 preflight BOOT_0={self.chip_id:#010x} BOOT_42={self.chip_boot42:#010x} "
+            f"architecture={self.chip_details['architecture']:#x} implementation={self.chip_details['implementation']:#x} "
+            f"SCRATCH_GROUP_42={vram_mib:#x} expected_mib={expected_mib}", flush=True)
+      require_ga100_vram_size(self.chip_config, vram_mib, expected_mib)
+    self.vram_size = vram_mib << 20
 
     self.vram, self.mmio = self.pci_dev.map_bar(1), self.pci_dev.map_bar(0, fmt='I')
     self.large_bar = self.vram.nbytes >= self.vram_size
