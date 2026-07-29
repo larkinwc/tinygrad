@@ -92,6 +92,13 @@ def test_ga100_uses_ampere_a_classes():
     nv_gpu.AMPERE_CHANNEL_GPFIFO_A, nv_gpu.AMPERE_COMPUTE_B, nv_gpu.AMPERE_DMA_COPY_B)
 
 
+def test_ga100_nvd_uses_sm80_renderer_target():
+  assert ops_nv.nv_renderer_arch(0x802) == "sm_80"
+  assert ops_nv.nv_renderer_arch(0x806) == "sm_86"
+  assert ops_nv.nv_renderer_arch(0x809) == "sm_89"
+  assert ops_nv.nv_renderer_arch(0xA04) == "sm_120"
+
+
 def test_ga100_heap_scales_with_framebuffer_size():
   config = get_nv_chip_config(0x17, 0x00)
   def calculate(fb_size):
