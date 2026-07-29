@@ -721,13 +721,28 @@ class NVDevice(HCQCompiled[NVSignal]):
 
     # Set windows addresses to not collide with other allocated buffers.
     self.shared_mem_window, self.local_mem_window = 0x729400000000, 0x729300000000
+    if self.copy_on_compute_queue:
+      self.ga100_setup_stage = "channel_semaphore"
+      NVComputeQueue().signal(self.timeline_signal, self.next_timeline()).submit(self)
+      self.synchronize()
 
-    NVComputeQueue().setup(compute_class=self.iface.compute_class, local_mem_window=self.local_mem_window, shared_mem_window=self.shared_mem_window) \
-                    .signal(self.timeline_signal, self.next_timeline()).submit(self)
+      self.ga100_setup_stage = "compute_object"
+      NVComputeQueue().setup(compute_class=self.iface.compute_class, shared_mem_window=self.shared_mem_window,
+                             local_mem_window=self.local_mem_window).signal(
+        self.timeline_signal, self.next_timeline()).submit(self)
+      self.synchronize()
 
-    (NVComputeQueue if self.copy_on_compute_queue else NVCopyQueue)().wait(self.timeline_signal, self.timeline_value - 1) \
-      .setup(copy_class=self.iface.dma_class).signal(self.timeline_signal, self.next_timeline()).submit(self)
+      self.ga100_setup_stage = "copy_object"
+      NVComputeQueue().setup(copy_class=self.iface.dma_class).signal(self.timeline_signal, self.next_timeline()).submit(self)
+      self.synchronize()
+      self.ga100_setup_stage = "complete"
+      return
 
+    NVComputeQueue().setup(compute_class=self.iface.compute_class, shared_mem_window=self.shared_mem_window,
+                           local_mem_window=self.local_mem_window).signal(
+      self.timeline_signal, self.next_timeline()).submit(self)
+    NVCopyQueue().wait(self.timeline_signal, self.timeline_value - 1).setup(copy_class=self.iface.dma_class).signal(
+      self.timeline_signal, self.next_timeline()).submit(self)
     self.synchronize()
 
   def _ensure_has_local_memory(self, required):
@@ -777,7 +792,7 @@ class NVDevice(HCQCompiled[NVSignal]):
     # Prepare fault report.
     # TODO: Restore the GPU using NV83DE_CTRL_CMD_CLEAR_ALL_SM_ERROR_STATES if needed.
 
-    report, seen_gpfifos = [], set()
+    report, seen_gpfifos = [f"setup_stage={getattr(self, 'ga100_setup_stage', 'unknown')}"], set()
     for name in ("compute_gpfifo", "dma_gpfifo"):
       if not hasattr(self, name) or id(gpfifo:=getattr(self, name)) in seen_gpfifos: continue
       seen_gpfifos.add(id(gpfifo))

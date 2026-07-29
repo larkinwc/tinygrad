@@ -146,6 +146,46 @@ def test_unified_ga100_graph_copy_never_instantiates_copy_queue():
   assert graph._copy_queue(dev, 0) is compute_queue
   assert graph.copy_queues == {}
 
+def test_unified_ga100_setup_isolates_each_engine_stage(monkeypatch):
+  events = []
+
+  class FakeComputeQueue:
+    def setup(self, **kwargs):
+      events.append(("setup", kwargs))
+      return self
+
+    def signal(self, _signal, value):
+      events.append(("signal", value))
+      return self
+
+    def submit(self, dev):
+      events.append(("submit", dev.ga100_setup_stage))
+      return self
+
+  class UnexpectedCopyQueue:
+    def __init__(self):
+      raise AssertionError("unified setup must not instantiate a copy queue")
+
+  monkeypatch.setattr(ops_nv, "NVComputeQueue", FakeComputeQueue)
+  monkeypatch.setattr(ops_nv, "NVCopyQueue", UnexpectedCopyQueue)
+  dev = ops_nv.NVDevice.__new__(ops_nv.NVDevice)
+  dev.copy_on_compute_queue = True
+  dev.iface = SimpleNamespace(compute_class=nv_gpu.AMPERE_COMPUTE_A, dma_class=nv_gpu.AMPERE_DMA_COPY_A)
+  dev.timeline_signal, dev.timeline_value = object(), 1
+  dev.synchronize = lambda: events.append(("sync", dev.ga100_setup_stage, dev.timeline_value - 1))
+
+  ops_nv.NVDevice._setup_gpfifos(dev)
+
+  assert dev.ga100_setup_stage == "complete"
+  assert events == [
+    ("signal", 1), ("submit", "channel_semaphore"), ("sync", "channel_semaphore", 1),
+    ("setup", {"compute_class": nv_gpu.AMPERE_COMPUTE_A, "shared_mem_window": 0x729400000000,
+               "local_mem_window": 0x729300000000}),
+    ("signal", 2), ("submit", "compute_object"), ("sync", "compute_object", 2),
+    ("setup", {"copy_class": nv_gpu.AMPERE_DMA_COPY_A}),
+    ("signal", 3), ("submit", "copy_object"), ("sync", "copy_object", 3),
+  ]
+
 
 def test_context_repromotion_reuses_buffers_without_allocating():
   mapping = SimpleNamespace(va_addr=0x100200000, paddrs=[(0x80000000, 0x20000)])
