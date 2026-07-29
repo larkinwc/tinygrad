@@ -105,6 +105,8 @@ class HCQGraph(MultiGraphRunner):
         enqueue_queue = self.comp_queues[enqueue_dev]
         rdma_key = (cast(HCQCompiled, Device[bufs[0].device]).rdma_dev(), enqueue_dev.rdma_dev())
         self.rdma_queues.setdefault(rdma_key, RDMACopyQueue(enqueue_dev.rdma_dev()))
+      elif getattr(enqueue_dev, "copy_on_compute_queue", False):
+        enqueue_queue, queue_idx = self.comp_queues[enqueue_dev], 0
       else:
         assert (enqueue_dev.hw_copy_queue_t is not None), "device must implement a copy queue"
         queue_idx = self.devices.index(cast(HCQCompiled, Device[bufs[0].device])) % self.num_copy_queues

@@ -127,6 +127,14 @@ class NVCommandQueue(HWQueue[HCQSignal, 'NVDevice', 'NVProgram', 'NVArgsState'])
     gpfifo.put_value += 1
 
 class NVComputeQueue(NVCommandQueue):
+  def copy(self, dest:HCQBuffer, src:HCQBuffer, copy_size:int):
+    for off in range(0, copy_size, step:=(1 << 31)):
+      self.nvm(4, nv_gpu.NVC6B5_OFFSET_IN_UPPER, *data64(src.va_addr+off), *data64(dest.va_addr+off))
+      self.nvm(4, nv_gpu.NVC6B5_LINE_LENGTH_IN, min(copy_size-off, step))
+      self.nvm(4, nv_gpu.NVC6B5_LAUNCH_DMA,
+               nv_flags("NVC6B5_LAUNCH_DMA", data_transfer_type="non_pipelined", src_memory_layout="pitch", dst_memory_layout="pitch"))
+    return self
+
   def memory_barrier(self):
     self.nvm(1, nv_gpu.NVC6C0_INVALIDATE_SHADER_CACHES_NO_WFI,
              nv_flags("NVC6C0_INVALIDATE_SHADER_CACHES_NO_WFI", instruction="true", global_data="true", constant="true"))
@@ -591,6 +599,7 @@ class NVDevice(HCQCompiled[NVSignal]):
   def __init__(self, device:str=""):
     self.device_id = int(device.split(":")[1]) if ":" in device else 0
     self.iface = self._select_iface()
+    self.copy_on_compute_queue = self.is_nvd() and self.iface.dev_impl.chip_name == "GA100"
 
     device_params = nv_gpu.NV0080_ALLOC_PARAMETERS(deviceId=self.iface.gpu_instance, hClientShare=self.iface.root,
                                                    vaMode=nv_gpu.NV_DEVICE_ALLOCATION_VAMODE_OPTIONAL_MULTIPLE_VASPACES)
@@ -618,7 +627,7 @@ class NVDevice(HCQCompiled[NVSignal]):
     ctxshare_params = nv_gpu.NV_CTXSHARE_ALLOCATION_PARAMETERS(hVASpace=vaspace, flags=nv_gpu.NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT_ASYNC)
     ctxshare = self.iface.rm_alloc(self.channel_group, nv_gpu.FERMI_CONTEXT_SHARE_A, ctxshare_params)
 
-    self._setup_compute_and_dma_gpfifos(ctxshare, vaspace)
+    self._setup_compute_and_dma_gpfifos(ctxshare)
     self.iface.rm_control(self.channel_group, nv_gpu.NVA06C_CTRL_CMD_GPFIFO_SCHEDULE, nv_gpu.NVA06C_CTRL_GPFIFO_SCHEDULE_PARAMS(bEnable=1))
 
     self.cmdq_page:HCQBuffer = self.iface.alloc(0x200000, cpu_access=True)
@@ -633,24 +642,25 @@ class NVDevice(HCQCompiled[NVSignal]):
     self.sass_version = ((self.sm_version & 0xf00) >> 4) | (self.sm_version & 0xf)
 
     super().__init__(device, NVAllocator(self), [CUDARenderer, PTXRenderer, NVCCRenderer, NAKRenderer], NVProgram, NVSignal, NVComputeQueue,
-                     NVCopyQueue, arch=self.arch)
+                     NVComputeQueue if self.copy_on_compute_queue else NVCopyQueue, arch=self.arch)
 
     self.pma_enabled = PMA.value > 0 and PROFILE >= 1
     if self.pma_enabled: self._prof_init()
 
     self._setup_gpfifos()
 
-  def _setup_compute_and_dma_gpfifos(self, ctxshare, vaspace):
+  def _setup_compute_and_dma_gpfifos(self, ctxshare):
     self.compute_gpfifo = self._new_gpu_fifo(self.gpfifo_area, ctxshare, self.channel_group, offset=0, entries=0x10000, compute=True)
-    if self.is_nvd() and self.iface.dev_impl.chip_name == "GA100":
-      self.dma_gpfifo = self._new_gpu_fifo(self.gpfifo_area, 0, self.nvdevice, offset=0x100000, entries=0x10000, compute=False, vaspace=vaspace)
+    if self.copy_on_compute_queue:
+      self.iface.rm_alloc(self.debug_channel, self.iface.dma_class)
+      self.dma_gpfifo = self.compute_gpfifo
     else:
       self.dma_gpfifo = self._new_gpu_fifo(self.gpfifo_area, ctxshare, self.channel_group, offset=0x100000, entries=0x10000, compute=False)
 
-  def _new_gpu_fifo(self, gpfifo_area, ctxshare, channel_group, offset=0, entries=0x400, compute=False, video=False, vaspace=0) -> GPFifo:
+  def _new_gpu_fifo(self, gpfifo_area, ctxshare, channel_group, offset=0, entries=0x400, compute=False, video=False) -> GPFifo:
     notifier = self.iface.alloc(48 << 20, uncached=True)
     params = nv_gpu.NV_CHANNELGPFIFO_ALLOCATION_PARAMETERS(gpFifoOffset=gpfifo_area.va_addr+offset, gpFifoEntries=entries, hContextShare=ctxshare,
-      hVASpace=vaspace, hObjectError=notifier.meta.hMemory, hObjectBuffer=self.virtmem if video else gpfifo_area.meta.hMemory,
+      hObjectError=notifier.meta.hMemory, hObjectBuffer=self.virtmem if video else gpfifo_area.meta.hMemory,
       hUserdMemory=(ctypes.c_uint32*8)(gpfifo_area.meta.hMemory), userdOffset=(ctypes.c_uint64*8)(entries*8+offset), engineType=19 if video else 0)
     gpfifo = self.iface.rm_alloc(channel_group, self.iface.gpfifo_class, params)
 
@@ -694,9 +704,8 @@ class NVDevice(HCQCompiled[NVSignal]):
     NVComputeQueue().setup(compute_class=self.iface.compute_class, local_mem_window=self.local_mem_window, shared_mem_window=self.shared_mem_window) \
                     .signal(self.timeline_signal, self.next_timeline()).submit(self)
 
-    NVCopyQueue().wait(self.timeline_signal, self.timeline_value - 1) \
-                 .setup(copy_class=self.iface.dma_class) \
-                 .signal(self.timeline_signal, self.next_timeline()).submit(self)
+    (NVComputeQueue if self.copy_on_compute_queue else NVCopyQueue)().wait(self.timeline_signal, self.timeline_value - 1) \
+      .setup(copy_class=self.iface.dma_class).signal(self.timeline_signal, self.next_timeline()).submit(self)
 
     self.synchronize()
 

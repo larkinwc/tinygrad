@@ -105,28 +105,29 @@ def test_ga100_heap_scales_with_framebuffer_size():
 def test_ga100_gsp_userd_layout_matches_inherited_openrm_hal():
   assert ga100_gsp_userd_layout(32) == (0x200, 0x200, 2)
 
-
-@pytest.mark.parametrize(("chip_name", "standalone"), (("GA100", True), ("GA102", False)))
-def test_nvd_ga100_uses_standalone_dma_gpfifo(chip_name, standalone):
+@pytest.mark.parametrize(("chip_name", "unified"), (("GA100", True), ("GA102", False)))
+def test_nvd_ga100_unifies_compute_and_dma_submission(chip_name, unified):
   dev = ops_nv.NVDevice.__new__(ops_nv.NVDevice)
-  dev.gpfifo_area, dev.nvdevice, dev.channel_group = object(), 0xCF000008, 0xCF00000C
+  dev.gpfifo_area, dev.channel_group, dev.debug_channel = object(), 0xCF00000C, 0xCF00000E
+  dev.copy_on_compute_queue = unified
   compute_fifo, dma_fifo, events = object(), object(), []
-  dev.iface = SimpleNamespace(dev_impl=SimpleNamespace(chip_name=chip_name))
-  dev.is_nvd = lambda: True
-  def new_fifo(_area, ctxshare, channel_group, *, offset, entries, compute, vaspace=0):
-    events.append(("fifo", ctxshare, channel_group, offset, entries, compute, vaspace))
+  dev.iface = SimpleNamespace(dma_class=nv_gpu.AMPERE_DMA_COPY_B,
+                              rm_alloc=lambda parent, clss: events.append(("alloc", parent, clss)))
+  def new_fifo(_area, ctxshare, channel_group, *, offset, entries, compute):
+    events.append(("fifo", ctxshare, channel_group, offset, entries, compute))
     return compute_fifo if compute else dma_fifo
   dev._new_gpu_fifo = new_fifo
 
-  ops_nv.NVDevice._setup_compute_and_dma_gpfifos(dev, 0xCF00000D, 0xCF00000B)
+  ops_nv.NVDevice._setup_compute_and_dma_gpfifos(dev, 0xCF00000D)
 
   assert dev.compute_gpfifo is compute_fifo
-  assert dev.dma_gpfifo is dma_fifo
-  assert events[0] == ("fifo", 0xCF00000D, 0xCF00000C, 0, 0x10000, True, 0)
-  if standalone:
-    assert events[1] == ("fifo", 0, 0xCF000008, 0x100000, 0x10000, False, 0xCF00000B)
+  assert (dev.dma_gpfifo is compute_fifo) is unified
+  if unified:
+    assert events == [("fifo", 0xCF00000D, 0xCF00000C, 0, 0x10000, True),
+                      ("alloc", 0xCF00000E, nv_gpu.AMPERE_DMA_COPY_B)]
   else:
-    assert events[1] == ("fifo", 0xCF00000D, 0xCF00000C, 0x100000, 0x10000, False, 0)
+    assert events == [("fifo", 0xCF00000D, 0xCF00000C, 0, 0x10000, True),
+                      ("fifo", 0xCF00000D, 0xCF00000C, 0x100000, 0x10000, False)]
 
 def test_context_repromotion_reuses_buffers_without_allocating():
   mapping = SimpleNamespace(va_addr=0x100200000, paddrs=[(0x80000000, 0x20000)])
