@@ -105,6 +105,29 @@ def test_ga100_gsp_userd_layout_matches_inherited_openrm_hal():
   assert ga100_gsp_userd_layout(32) == (0x200, 0x200, 2)
 
 
+@pytest.mark.parametrize(("chip_name", "shared"), (("GA100", True), ("GA102", False)))
+def test_nvd_ga100_shares_one_gpfifo_between_compute_and_dma(chip_name, shared):
+  dev = ops_nv.NVDevice.__new__(ops_nv.NVDevice)
+  dev.gpfifo_area, dev.channel_group, dev.debug_channel = object(), 0xCF00000C, 0xCF00000E
+  compute_fifo, dma_fifo, events = object(), object(), []
+  dev.iface = SimpleNamespace(dev_impl=SimpleNamespace(chip_name=chip_name), dma_class=nv_gpu.AMPERE_DMA_COPY_B,
+                              rm_alloc=lambda parent, clss: events.append(("alloc", parent, clss)))
+  dev.is_nvd = lambda: True
+  def new_fifo(_area, _ctxshare, _channel_group, *, offset, entries, compute):
+    events.append(("fifo", offset, entries, compute))
+    return compute_fifo if compute else dma_fifo
+  dev._new_gpu_fifo = new_fifo
+
+  ops_nv.NVDevice._setup_compute_and_dma_gpfifos(dev, 0xCF00000D)
+
+  assert dev.compute_gpfifo is compute_fifo
+  assert (dev.dma_gpfifo is compute_fifo) is shared
+  if shared:
+    assert events == [("fifo", 0, 0x10000, True), ("alloc", 0xCF00000E, nv_gpu.AMPERE_DMA_COPY_B)]
+  else:
+    assert events == [("fifo", 0, 0x10000, True), ("fifo", 0x100000, 0x10000, False)]
+
+
 def test_context_repromotion_reuses_buffers_without_allocating():
   mapping = SimpleNamespace(va_addr=0x100200000, paddrs=[(0x80000000, 0x20000)])
   controls = []
