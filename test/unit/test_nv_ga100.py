@@ -4,7 +4,7 @@ import pytest
 
 from tinygrad.runtime import ops_nv
 from tinygrad.runtime.autogen import nv_570 as nv_gpu
-from tinygrad.runtime.support.nv.ip import NV_FLCN_GA100, gsp_fw_heap_size, parse_riscv_ucode_desc
+from tinygrad.runtime.support.nv.ip import NV_FLCN_GA100, ga100_gsp_userd_layout, gsp_fw_heap_size, parse_riscv_ucode_desc
 from tinygrad.runtime.support.nv.nvdev import decode_gp102_lmr_vram_mib, get_nv_chip_config, require_ga100_vram_size
 
 
@@ -98,6 +98,10 @@ def test_ga100_heap_scales_with_framebuffer_size():
   assert calculate(8 << 30) == 105 << 20
   assert calculate(64 << 30) == 110 << 20
   assert calculate(80 << 30) == 112 << 20
+
+
+def test_ga100_gsp_userd_layout_matches_inherited_openrm_hal():
+  assert ga100_gsp_userd_layout(32) == (0x200, 0x200, 2)
 
 
 def test_ga100_flcn_skips_fwsec_frts():

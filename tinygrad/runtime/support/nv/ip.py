@@ -15,6 +15,10 @@ def gsp_fw_heap_size(fb_size:int, os_size:int, min_mb:int, max_mb:int) -> int:
   size = os_size + (8 << 20) + round_up((96 << 10) * fb_size_gb, 1 << 20) + (96 << 20)
   return max(min_mb << 20, min(max_mb << 20, size))
 
+def ga100_gsp_userd_layout(gpfifo_entries:int) -> tuple[int, int, int]:
+  userd_size = 0x200
+  return round_up(gpfifo_entries * 8, userd_size), userd_size, 2
+
 BOOTER_LOAD_FW_SHA256 = {
   "ga100": "46bafe32b2d1f59713fc8369b5e59e7267d7da4413ad6486aef69d50daa764cd",
   "ga102": "4497e3eff7e95c774b8a569d17b27c08c9650158d10b229d2be81cdcad9a085b",
@@ -543,10 +547,13 @@ class NV_GSP(NV_IP):
         size=self.nvdev.mm.pte_cnt[0] * 8 if i == 0 else 0x1000, pageShift=self.nvdev.mm.pte_covers[i].bit_length() - 1, aperture=1)
     self.rpc_rm_control(hObject=vaspace, cmd=nv_gpu.NV90F1_CTRL_CMD_VASPACE_COPY_SERVER_RESERVED_PDES, params=bufs_p)
 
-    gpfifo_area = self.nvdev.mm.valloc(4 << 10, contiguous=True)
-    userd = nv_gpu.NV_MEMORY_DESC_PARAMS(base=gpfifo_area.paddrs[0][0] + 0x20 * 8, size=0x20, addressSpace=2, cacheAttrib=0)
-    gg_params = nv_gpu.NV_CHANNELGPFIFO_ALLOCATION_PARAMETERS(gpFifoOffset=gpfifo_area.va_addr, gpFifoEntries=32, engineType=0x1, cid=3,
-      hVASpace=vaspace, userdOffset=(ctypes.c_uint64*8)(0x20 * 8), userdMem=userd, internalFlags=0x1a, flags=0x200320)
+    gpfifo_area, gpfifo_entries = self.nvdev.mm.valloc(4 << 10, contiguous=True), 32
+    userd_offset, userd_size, userd_cache_attrib = (
+      ga100_gsp_userd_layout(gpfifo_entries) if self.nvdev.chip_name == "GA100" else (gpfifo_entries * 8, 0x20, 0))
+    userd = nv_gpu.NV_MEMORY_DESC_PARAMS(base=gpfifo_area.paddrs[0][0] + userd_offset, size=userd_size,
+      addressSpace=2, cacheAttrib=userd_cache_attrib)
+    gg_params = nv_gpu.NV_CHANNELGPFIFO_ALLOCATION_PARAMETERS(gpFifoOffset=gpfifo_area.va_addr, gpFifoEntries=gpfifo_entries, engineType=0x1, cid=3,
+      hVASpace=vaspace, userdOffset=(ctypes.c_uint64*8)(userd_offset), userdMem=userd, internalFlags=0x1a, flags=0x200320)
     ch_gpfifo = self.rpc_rm_alloc(hParent=dev, hClass=self.gpfifo_class, params=gg_params)
 
     gr_ctx_bufs_info = self.rpc_rm_control(hObject=subdev, cmd=nv_gpu.NV2080_CTRL_CMD_INTERNAL_STATIC_KGR_GET_CONTEXT_BUFFERS_INFO,
