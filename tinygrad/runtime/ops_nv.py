@@ -28,6 +28,7 @@ NV_QMD_GROUP_ID = ContextVar("NV_QMD_GROUP_ID", 0x3f)
 NV_QMD_LOCAL_MEMORY_SIZE = ContextVar("NV_QMD_LOCAL_MEMORY_SIZE", 0)
 NV_QMD_LOCAL_MEMORY_LOW_SIZE = ContextVar("NV_QMD_LOCAL_MEMORY_LOW_SIZE", -1)
 NV_QMD_LOCAL_MEMORY_HIGH_SIZE = ContextVar("NV_QMD_LOCAL_MEMORY_HIGH_SIZE", -1)
+NV_QMD_PCAS_ACTION = ContextVar("NV_QMD_PCAS_ACTION", -1)
 NV_QMD_SASS_VERSION = ContextVar("NV_QMD_SASS_VERSION", 0)
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ def nv_qmd_slm_fields(size:int, nak:bool, shifted4:bool=False) -> dict[str, int]
   return {f"shader_local_memory_low_size{suffix}": low >> shift, f"shader_local_memory_high_size{suffix}": high >> shift}
 
 def nv_pcas_action(compute_class:int) -> int:
+  if NV_QMD_PCAS_ACTION.value >= 0: return NV_QMD_PCAS_ACTION.value
   # Ampere's documented launch sequence copies and schedules the QMD. GA100 did not complete its first QMD with PREFETCH_SCHEDULE.
   if compute_class == nv_gpu.AMPERE_COMPUTE_A: return nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_INVALIDATE_COPY_SCHEDULE
   return nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE

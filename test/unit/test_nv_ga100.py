@@ -120,6 +120,9 @@ def test_ga100_nvd_uses_sm80_renderer_target():
     nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_INVALIDATE_COPY_SCHEDULE
   assert ops_nv.nv_pcas_action(nv_gpu.AMPERE_COMPUTE_B) == \
     nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE
+  with Context(NV_QMD_PCAS_ACTION=nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_INVALIDATE_PREFETCH_COPY_SCHEDULE):
+    assert ops_nv.nv_pcas_action(nv_gpu.AMPERE_COMPUTE_A) == \
+      nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_INVALIDATE_PREFETCH_COPY_SCHEDULE
 
 
 def test_qmd_constant_buffer_size_uses_shifted4_units():
