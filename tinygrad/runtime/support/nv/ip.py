@@ -2,10 +2,12 @@ from __future__ import annotations
 import ctypes, time, array, struct, itertools, dataclasses
 from typing import cast, Any
 from tinygrad.runtime.autogen import nv, nv_570 as nv_gpu, pci
-from tinygrad.helpers import lo32, hi32, DEBUG, round_up, round_down, fetch_fw, wait_cond, ceildiv
+from tinygrad.helpers import lo32, hi32, DEBUG, round_up, round_down, fetch_fw, wait_cond, ceildiv, ContextVar
 from tinygrad.runtime.support.system import System
 from tinygrad.runtime.support.hcq import MMIOInterface
 from tinygrad.runtime.support.elf import elf_loader
+NV_GA100_RETAIN_SHARED_GR_CTX = ContextVar("NV_GA100_RETAIN_SHARED_GR_CTX", 1)
+
 
 @dataclasses.dataclass(frozen=True)
 class GRBufDesc: size:int; virt:bool; phys:bool; local:bool=False # noqa: E702
@@ -630,7 +632,7 @@ class NV_GSP(NV_IP):
     if hClass == self.compute_class and client != self.priv_root:
       ctxbufs = {k:v for k,v in self.grctx_bufs.items() if k in [0, 1, 2]}
       phys_gr_ctx = self.promote_ctx(client, self.subdevice, hParent, ctxbufs, virt=False)
-      if self.nvdev.chip_name == "GA100":
+      if self.nvdev.chip_name == "GA100" and NV_GA100_RETAIN_SHARED_GR_CTX.value:
         # Bind the exact compute/non-3D resource set returned by GR_GET_CTX_BUFFER_INFO: local MAIN/PATCH/PM plus the
         # shared FECS event and privileged-access maps. Promoting 3D-only global buffers changes the compute context contract.
         retained_ctxbufs = {k:v for k,v in self.grctx_bufs.items() if k in [0, 1, 2, 9, 10, 11]}

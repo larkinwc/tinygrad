@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tinygrad.helpers import Context
 from tinygrad.runtime import ops_nv
 from tinygrad.runtime.autogen import nv_570 as nv_gpu
 from tinygrad.runtime.support.nv.ip import GRBufDesc, NV_FLCN_GA100, NV_GSP, ga100_gsp_userd_layout, gsp_fw_heap_size, parse_riscv_ucode_desc
@@ -326,8 +327,8 @@ def test_user_gpfifo_uses_chip_userd_contract(chip_name, userd_size, userd_cache
   assert params.errorNotifierMem.addressSpace == 1
 
 
-@pytest.mark.parametrize("chip_name", ("GA100", "GA102"))
-def test_user_compute_allocation_preserves_chip_promotion_contract(chip_name):
+@pytest.mark.parametrize(("chip_name", "retain_shared"), (("GA100", 1), ("GA100", 0), ("GA102", 1)))
+def test_user_compute_allocation_preserves_chip_promotion_contract(chip_name, retain_shared):
   promotions, user_allocs = [], {0: object(), 1: object(), 2: object()}
   golden_allocs = {0: object(), 2: object(), 3: object(), 9: object(), 10: object(), 11: object()}
 
@@ -357,14 +358,15 @@ def test_user_compute_allocation_preserves_chip_promotion_contract(chip_name):
     promote_ctx=promote_ctx,
   )
 
-  result = NV_GSP.rpc_rm_alloc(gsp, 0xCF00000E, nv_gpu.AMPERE_COMPUTE_A, None, client=0xC1000000)
+  with Context(NV_GA100_RETAIN_SHARED_GR_CTX=retain_shared):
+    result = NV_GSP.rpc_rm_alloc(gsp, 0xCF00000E, nv_gpu.AMPERE_COMPUTE_A, None, client=0xC1000000)
 
   assert result == 0xCF00000F
   assert len(promotions) == 2
   assert promotions[0][0][:3] == (0xC1000000, 0xCF000009, 0xCF00000E)
   assert set(promotions[0][0][3]) == {0, 1, 2}
   assert promotions[0][1] == {"virt": False}
-  if chip_name == "GA100":
+  if chip_name == "GA100" and retain_shared:
     assert set(promotions[1][0][3]) == {0, 1, 2, 9, 10, 11}
     assert promotions[1][0][4] == {k:(golden_allocs | user_allocs)[k] for k in {0, 1, 2, 9, 10, 11}}
     assert promotions[1][1] == {"virt": True, "phys": False}
