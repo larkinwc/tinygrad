@@ -103,6 +103,10 @@ def test_ga100_nvd_uses_sm80_renderer_target():
   assert ops_nv.nv_qmd_launch_sass_version(0x802) == 0x82
   with Context(NV_QMD_SASS_VERSION=0x80):
     assert ops_nv.nv_qmd_launch_sass_version(0x802) == 0x80
+  assert ops_nv.nv_qmd_slm_fields(0x240) == {
+    "shader_local_memory_low_size": 0x240, "shader_local_memory_high_size": 0}
+  assert ops_nv.nv_qmd_slm_fields(0x240, shifted4=True) == {
+    "shader_local_memory_low_size_shifted4": 0x24, "shader_local_memory_high_size_shifted4": 0}
   assert ops_nv.nv_pcas_action(nv_gpu.AMPERE_COMPUTE_A) == \
     nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_INVALIDATE_COPY_SCHEDULE
   assert ops_nv.nv_pcas_action(nv_gpu.AMPERE_COMPUTE_B) == \
@@ -148,7 +152,8 @@ def test_qmd_snapshot_captures_launch_and_release_contract():
                    program_address_lower=0x12340000, program_prefetch_addr_upper_shifted=0x1,
                    program_prefetch_addr_lower_shifted=0x23456789, program_prefetch_size=3,
                    constant_buffer_addr_upper_0=0x10, constant_buffer_addr_lower_0=0x23450000,
-                   constant_buffer_size_shifted4_0=0x160, cta_raster_width=2, cta_raster_height=3,
+                   constant_buffer_size_shifted4_0=0x160, shader_local_memory_low_size=0x240,
+                   shader_local_memory_high_size=0, cta_raster_width=2, cta_raster_height=3,
                    cta_raster_depth=4, cta_thread_dimension0=5, cta_thread_dimension1=6,
                    cta_thread_dimension2=7, release0_enable=1, release0_address_upper=0x10,
                    release0_address_lower=0x34560000, release0_payload_upper=0, release0_payload_lower=7)
@@ -165,6 +170,8 @@ def test_qmd_snapshot_captures_launch_and_release_contract():
   assert snapshot["program_prefetch_size"] == 3
   assert snapshot["constant_buffer0_address"] == 0x1023450000
   assert snapshot["constant_buffer0_size_shifted4"] == 0x160
+  assert snapshot["shader_local_memory_low_size"] == 0x240
+  assert snapshot["shader_local_memory_high_size"] == 0
   assert snapshot["grid"] == [2, 3, 4]
   assert snapshot["cta_threads"] == [5, 6, 7]
   assert snapshot["releases"] == [{"enable": 1, "address": 0x1034560000, "payload": 7},
