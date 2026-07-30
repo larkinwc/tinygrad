@@ -24,6 +24,7 @@ NV_PCI_DEVICES = ((0xff00, (0x2000,0x2200,0x2400,0x2500,0x2600,0x2700,0x2800,0x2
 PMA = ContextVar("PMA", abs(VIZ.value)>=2)
 NV_QMD_CBUF_SHIFTED4 = ContextVar("NV_QMD_CBUF_SHIFTED4", 0)
 NV_QMD_DISABLE_PREFETCH = ContextVar("NV_QMD_DISABLE_PREFETCH", 0)
+NV_QMD_GROUP_ID = ContextVar("NV_QMD_GROUP_ID", 0x3f)
 NV_QMD_LOCAL_MEMORY_SIZE = ContextVar("NV_QMD_LOCAL_MEMORY_SIZE", 0)
 NV_QMD_SASS_VERSION = ContextVar("NV_QMD_SASS_VERSION", 0)
 
@@ -153,6 +154,7 @@ class QMD:
     slm_suffix, slm_shift = ("_shifted4", 4) if self.ver >= 4 else ("", 0)
     return {"address": int(va_addr), "size": self.sz * 4, "raw": bytes(self.mv[:self.sz * 4]).hex(),
             "major_version": self.read("qmd_major_version"), "sass_version": self.read("sass_version"),
+            "qmd_group_id": self.read("qmd_group_id"),
             "program_address": program_address,
             "program_prefetch_address": address("program_prefetch_addr_lower_shifted", "program_prefetch_addr_upper_shifted", 8),
             "program_prefetch_size": self.read("program_prefetch_size"),
@@ -421,7 +423,7 @@ class NVProgram(HCQProgram['NVDevice']):
 
     smem_cfg = min(shmem_conf * 1024 for shmem_conf in [32, 64, 100] if shmem_conf * 1024 >= self.shmem_usage) // 4096 + 1
 
-    self.qmd:QMD = QMD(dev, **qmd, qmd_group_id=0x3f, invalidate_texture_header_cache=1, invalidate_texture_sampler_cache=1,
+    self.qmd:QMD = QMD(dev, **qmd, qmd_group_id=NV_QMD_GROUP_ID.value, invalidate_texture_header_cache=1, invalidate_texture_sampler_cache=1,
       invalidate_texture_data_cache=1, invalidate_shader_data_cache=1, api_visible_call_limit=1, sampler_index=1, barrier_count=1,
       cwd_membar_type=nv_gpu.NVC6C0_QMDV03_00_CWD_MEMBAR_TYPE_L1_SYSMEMBAR, constant_buffer_invalidate_0=1, min_sm_config_shared_mem_size=smem_cfg,
       target_sm_config_shared_mem_size=smem_cfg, max_sm_config_shared_mem_size=0x1a,

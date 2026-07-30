@@ -106,6 +106,9 @@ def test_ga100_nvd_uses_sm80_renderer_target():
   assert ops_nv.nv_qmd_local_memory_size(0x240) == 0x240
   with Context(NV_QMD_LOCAL_MEMORY_SIZE=0x640):
     assert ops_nv.nv_qmd_local_memory_size(0x240) == 0x640
+  assert ops_nv.NV_QMD_GROUP_ID.value == 0x3f
+  with Context(NV_QMD_GROUP_ID=0):
+    assert ops_nv.NV_QMD_GROUP_ID.value == 0
   assert ops_nv.nv_pcas_action(nv_gpu.AMPERE_COMPUTE_A) == \
     nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_INVALIDATE_COPY_SCHEDULE
   assert ops_nv.nv_pcas_action(nv_gpu.AMPERE_COMPUTE_B) == \
@@ -147,7 +150,7 @@ def test_slm_snapshot_exposes_active_and_max_topology_sizes():
 
 def test_qmd_snapshot_captures_launch_and_release_contract():
   dev = SimpleNamespace(iface=SimpleNamespace(compute_class=nv_gpu.AMPERE_COMPUTE_A))
-  qmd = ops_nv.QMD(dev, qmd_major_version=3, sass_version=0x82, program_address_upper=0x10,
+  qmd = ops_nv.QMD(dev, qmd_major_version=3, qmd_group_id=0x3f, sass_version=0x82, program_address_upper=0x10,
                    program_address_lower=0x12340000, program_prefetch_addr_upper_shifted=0x1,
                    program_prefetch_addr_lower_shifted=0x23456789, program_prefetch_size=3,
                    constant_buffer_addr_upper_0=0x10, constant_buffer_addr_lower_0=0x23450000,
@@ -163,6 +166,7 @@ def test_qmd_snapshot_captures_launch_and_release_contract():
   assert snapshot["size"] == 0x100
   assert len(snapshot["raw"]) == 0x200
   assert snapshot["major_version"] == 3
+  assert snapshot["qmd_group_id"] == 0x3f
   assert snapshot["sass_version"] == 0x82
   assert snapshot["program_address"] == 0x1012340000
   assert snapshot["program_prefetch_address"] == 0x12345678900
