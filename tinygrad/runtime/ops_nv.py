@@ -24,6 +24,7 @@ NV_PCI_DEVICES = ((0xff00, (0x2000,0x2200,0x2400,0x2500,0x2600,0x2700,0x2800,0x2
 PMA = ContextVar("PMA", abs(VIZ.value)>=2)
 NV_QMD_CBUF_SHIFTED4 = ContextVar("NV_QMD_CBUF_SHIFTED4", 0)
 NV_QMD_DISABLE_PREFETCH = ContextVar("NV_QMD_DISABLE_PREFETCH", 0)
+NV_QMD_LOCAL_MEMORY_SIZE = ContextVar("NV_QMD_LOCAL_MEMORY_SIZE", 0)
 NV_QMD_SASS_VERSION = ContextVar("NV_QMD_SASS_VERSION", 0)
 
 @dataclass(frozen=True)
@@ -52,11 +53,8 @@ def nv_qmd_cbuf_size_shifted4(size:int) -> int:
 
 def nv_qmd_cbuf_size(size:int, shifted4:bool) -> int:
   return nv_qmd_cbuf_size_shifted4(size) if shifted4 else size
-def nv_qmd_slm_fields(size:int, shifted4:bool=False) -> dict[str, int]:
-  # LOW and HIGH are portions of one SLM size, not separate compiler local-memory classes.
-  assert size >= 0 and size % 0x10 == 0
-  suffix, value = ("_shifted4", size >> 4) if shifted4 else ("", size)
-  return {f"shader_local_memory_low_size{suffix}": value, f"shader_local_memory_high_size{suffix}": 0}
+def nv_qmd_local_memory_size(required:int) -> int:
+  return max(required, NV_QMD_LOCAL_MEMORY_SIZE.value)
 
 def nv_pcas_action(compute_class:int) -> int:
   # Ampere's documented launch sequence copies and schedules the QMD. GA100 did not complete its first QMD with PREFETCH_SCHEDULE.
@@ -402,7 +400,7 @@ class NVProgram(HCQProgram['NVDevice']):
     self.program_address, self.program_image, self.program_resident_image = \
       prog_addr, bytes(image)[prog_addr-self.lib_gpu.va_addr:prog_addr-self.lib_gpu.va_addr+prog_sz], None
     # Ensure device has enough local memory to run the program
-    self.dev._ensure_has_local_memory(self.lcmem_usage)
+    self.dev._ensure_has_local_memory(nv_qmd_local_memory_size(self.lcmem_usage))
     self.dev.allocator._copyin(self.lib_gpu, image)
     self.dev.synchronize()
     if dev.copy_on_compute_queue:
@@ -414,11 +412,12 @@ class NVProgram(HCQProgram['NVDevice']):
       if not NAK: self.cbuf_0[188:192], self.cbuf_0[223] = [*data64_le(self.dev.shared_mem_window), *data64_le(self.dev.local_mem_window)], 0xfffdc0
       qmd = {'qmd_major_version':5, 'qmd_type':nv_gpu.NVCEC0_QMDV05_00_QMD_TYPE_GRID_CTA, 'program_address_upper_shifted4':hi32(prog_addr>>4),
         'program_address_lower_shifted4':lo32(prog_addr>>4), 'register_count':self.regs_usage, 'shared_memory_size_shifted7':self.shmem_usage>>7,
-        **nv_qmd_slm_fields(self.dev.slm_per_thread, shifted4=True)}
+        f'shader_local_memory_{"low" if NAK else "high"}_size_shifted4': self.dev.slm_per_thread>>4}
     else:
       if not NAK: self.cbuf_0[6:12] = [*data64_le(self.dev.shared_mem_window), *data64_le(self.dev.local_mem_window), *data64_le(0xfffdc0)]
       qmd = {'qmd_major_version':3, 'sm_global_caching_enable':1, 'program_address_upper':hi32(prog_addr), 'program_address_lower':lo32(prog_addr),
-        'shared_memory_size':self.shmem_usage, 'register_count_v':self.regs_usage, **nv_qmd_slm_fields(self.dev.slm_per_thread)}
+        'shared_memory_size':self.shmem_usage, 'register_count_v':self.regs_usage,
+        f'shader_local_memory_{"low" if NAK else "high"}_size':self.dev.slm_per_thread}
 
     smem_cfg = min(shmem_conf * 1024 for shmem_conf in [32, 64, 100] if shmem_conf * 1024 >= self.shmem_usage) // 4096 + 1
 

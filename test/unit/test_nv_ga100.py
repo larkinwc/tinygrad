@@ -103,10 +103,9 @@ def test_ga100_nvd_uses_sm80_renderer_target():
   assert ops_nv.nv_qmd_launch_sass_version(0x802) == 0x82
   with Context(NV_QMD_SASS_VERSION=0x80):
     assert ops_nv.nv_qmd_launch_sass_version(0x802) == 0x80
-  assert ops_nv.nv_qmd_slm_fields(0x240) == {
-    "shader_local_memory_low_size": 0x240, "shader_local_memory_high_size": 0}
-  assert ops_nv.nv_qmd_slm_fields(0x240, shifted4=True) == {
-    "shader_local_memory_low_size_shifted4": 0x24, "shader_local_memory_high_size_shifted4": 0}
+  assert ops_nv.nv_qmd_local_memory_size(0x240) == 0x240
+  with Context(NV_QMD_LOCAL_MEMORY_SIZE=0x640):
+    assert ops_nv.nv_qmd_local_memory_size(0x240) == 0x640
   assert ops_nv.nv_pcas_action(nv_gpu.AMPERE_COMPUTE_A) == \
     nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_INVALIDATE_COPY_SCHEDULE
   assert ops_nv.nv_pcas_action(nv_gpu.AMPERE_COMPUTE_B) == \
