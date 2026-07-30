@@ -885,8 +885,8 @@ class NVDevice(HCQCompiled[NVSignal]):
                                                      "active_per_thread": self.slm_per_thread}
 
     cast(NVComputeQueue, NVComputeQueue().wait(self.timeline_signal, self.timeline_value - 1)) \
-                                         .setup(local_mem=self.shader_local_mem.va_addr, local_mem_tpc_bytes=bytes_per_tpc) \
-                                         .signal(self.timeline_signal, self.next_timeline()).submit(self)
+      .setup(compute_class=self.iface.compute_class, local_mem=self.shader_local_mem.va_addr, local_mem_tpc_bytes=bytes_per_tpc) \
+      .signal(self.timeline_signal, self.next_timeline()).submit(self)
 
   def _ensure_has_vid_hw(self, w, h):
     if self.iface.viddec_class is None: raise RuntimeError(f"{self.device} Video decoder class not available.")

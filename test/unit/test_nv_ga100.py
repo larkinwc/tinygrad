@@ -303,6 +303,48 @@ def test_unified_ga100_setup_isolates_each_engine_stage(monkeypatch):
   ]
 
 
+def test_local_memory_setup_rebinds_compute_object(monkeypatch):
+  events = []
+
+  class FakeComputeQueue:
+    def wait(self, signal, value):
+      events.append(("wait", signal, value))
+      return self
+
+    def setup(self, **kwargs):
+      events.append(("setup", kwargs))
+      return self
+
+    def signal(self, signal, value):
+      events.append(("signal", signal, value))
+      return self
+
+    def submit(self, dev):
+      events.append(("submit", dev))
+      return self
+
+  slm = SimpleNamespace(va_addr=0x1020000000, size=0x40000)
+  monkeypatch.setattr(ops_nv, "NVComputeQueue", FakeComputeQueue)
+  monkeypatch.setattr(ops_nv, "nv_slm_snapshot", lambda *_args: {
+    "allocated_per_thread": 0x240, "bytes_per_tpc": 0x20000, "allocation_size": slm.size})
+  dev = ops_nv.NVDevice.__new__(ops_nv.NVDevice)
+  dev.slm_per_thread, dev.shader_local_mem = 0, None
+  dev.max_warps_per_sm, dev.num_sm_per_tpc, dev.num_gpcs, dev.num_tpc_per_gpc, dev.tpc_masks = 0, 0, 0, 0, []
+  dev.timeline_signal, dev.timeline_value = object(), 4
+  dev.iface = SimpleNamespace(compute_class=nv_gpu.AMPERE_COMPUTE_A)
+  dev._realloc = lambda _old, size: (slm, size == slm.size)
+  dev.next_timeline = lambda: 5
+
+  ops_nv.NVDevice._ensure_has_local_memory(dev, 1)
+
+  assert events == [
+    ("wait", dev.timeline_signal, 3),
+    ("setup", {"compute_class": nv_gpu.AMPERE_COMPUTE_A, "local_mem": slm.va_addr, "local_mem_tpc_bytes": 0x20000}),
+    ("signal", dev.timeline_signal, 5),
+    ("submit", dev),
+  ]
+
+
 def test_context_repromotion_reuses_buffers_without_allocating():
   mapping = SimpleNamespace(va_addr=0x100200000, paddrs=[(0x80000000, 0x20000)])
   controls = []
