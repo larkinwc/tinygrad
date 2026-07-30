@@ -67,6 +67,13 @@ def nv_qmd_slm_fields(size:int, nak:bool, shifted4:bool=False) -> dict[str, int]
   assert low % 0x10 == 0 and high % 0x10 == 0
   suffix, shift = ("_shifted4", 4) if shifted4 else ("", 0)
   return {f"shader_local_memory_low_size{suffix}": low >> shift, f"shader_local_memory_high_size{suffix}": high >> shift}
+def nv_qmd_smem_fields(size:int, compute_class:int, nak:bool) -> dict[str, int]:
+  if nak and compute_class == nv_gpu.AMPERE_COMPUTE_A:
+    cfg = min(size_kb * 1024 for size_kb in [8, 16, 32, 64, 96] if size_kb * 1024 >= size) // 4096 + 1
+    return {"min_sm_config_shared_mem_size": cfg, "target_sm_config_shared_mem_size": cfg, "max_sm_config_shared_mem_size": 0x11}
+  cfg = min(size_kb * 1024 for size_kb in [32, 64, 100] if size_kb * 1024 >= size) // 4096 + 1
+  return {"min_sm_config_shared_mem_size": cfg, "target_sm_config_shared_mem_size": cfg, "max_sm_config_shared_mem_size": 0x1a}
+
 
 def nv_pcas_action(compute_class:int) -> int:
   if NV_QMD_PCAS_ACTION.value >= 0: return NV_QMD_PCAS_ACTION.value
@@ -433,12 +440,10 @@ class NVProgram(HCQProgram['NVDevice']):
         'shared_memory_size':self.shmem_usage, 'register_count_v':self.regs_usage,
         **nv_qmd_slm_fields(self.dev.slm_per_thread, NAK)}
 
-    smem_cfg = min(shmem_conf * 1024 for shmem_conf in [32, 64, 100] if shmem_conf * 1024 >= self.shmem_usage) // 4096 + 1
-
     self.qmd:QMD = QMD(dev, **qmd, qmd_group_id=NV_QMD_GROUP_ID.value, invalidate_texture_header_cache=1, invalidate_texture_sampler_cache=1,
       invalidate_texture_data_cache=1, invalidate_shader_data_cache=1, api_visible_call_limit=1, sampler_index=1, barrier_count=1,
-      cwd_membar_type=nv_gpu.NVC6C0_QMDV03_00_CWD_MEMBAR_TYPE_L1_SYSMEMBAR, constant_buffer_invalidate_0=1, min_sm_config_shared_mem_size=smem_cfg,
-      target_sm_config_shared_mem_size=smem_cfg, max_sm_config_shared_mem_size=0x1a,
+      cwd_membar_type=nv_gpu.NVC6C0_QMDV03_00_CWD_MEMBAR_TYPE_L1_SYSMEMBAR, constant_buffer_invalidate_0=1,
+      **nv_qmd_smem_fields(self.shmem_usage, dev.iface.compute_class, NAK),
       program_prefetch_size=0 if NV_QMD_DISABLE_PREFETCH.value else min(prog_sz>>8, 0x1ff),
       sass_version=nv_qmd_launch_sass_version(dev.sm_version),
       program_prefetch_addr_upper_shifted=prog_addr>>40, program_prefetch_addr_lower_shifted=prog_addr>>8)

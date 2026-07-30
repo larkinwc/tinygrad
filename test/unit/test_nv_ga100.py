@@ -115,6 +115,10 @@ def test_ga100_nvd_uses_sm80_renderer_target():
   with Context(NV_QMD_LOCAL_MEMORY_LOW_SIZE=0x640, NV_QMD_LOCAL_MEMORY_HIGH_SIZE=0x640):
     assert ops_nv.nv_qmd_slm_fields(0xC80, nak=False) == {
       "shader_local_memory_low_size": 0x640, "shader_local_memory_high_size": 0x640}
+  assert ops_nv.nv_qmd_smem_fields(0, nv_gpu.AMPERE_COMPUTE_A, nak=True) == {
+    "min_sm_config_shared_mem_size": 3, "target_sm_config_shared_mem_size": 3, "max_sm_config_shared_mem_size": 0x11}
+  assert ops_nv.nv_qmd_smem_fields(0x400, nv_gpu.AMPERE_COMPUTE_A, nak=False) == {
+    "min_sm_config_shared_mem_size": 9, "target_sm_config_shared_mem_size": 9, "max_sm_config_shared_mem_size": 0x1a}
   assert ops_nv.NV_QMD_GROUP_ID.value == 0x3f
   with Context(NV_QMD_GROUP_ID=0):
     assert ops_nv.NV_QMD_GROUP_ID.value == 0
