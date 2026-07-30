@@ -24,6 +24,7 @@ NV_PCI_DEVICES = ((0xff00, (0x2000,0x2200,0x2400,0x2500,0x2600,0x2700,0x2800,0x2
 PMA = ContextVar("PMA", abs(VIZ.value)>=2)
 NV_QMD_CBUF_SHIFTED4 = ContextVar("NV_QMD_CBUF_SHIFTED4", 0)
 NV_QMD_DISABLE_PREFETCH = ContextVar("NV_QMD_DISABLE_PREFETCH", 0)
+NV_QMD_SASS_VERSION = ContextVar("NV_QMD_SASS_VERSION", 0)
 
 @dataclass(frozen=True)
 class ProfilePMAEvent(ProfileEvent): device:str; kern:str; blob:bytes; exec_tag:int # noqa: E702
@@ -43,6 +44,8 @@ def nv_renderer_arch(sm_version:int) -> str:
 
 def nv_qmd_sass_version(sm_version:int) -> int:
   return ((sm_version & 0xf00) >> 4) | (sm_version & 0xf)
+def nv_qmd_launch_sass_version(sm_version:int) -> int:
+  return NV_QMD_SASS_VERSION.value or nv_qmd_sass_version(sm_version)
 
 def nv_qmd_cbuf_size_shifted4(size:int) -> int:
   return round_up(size, 16) >> 4
@@ -416,7 +419,8 @@ class NVProgram(HCQProgram['NVDevice']):
       invalidate_texture_data_cache=1, invalidate_shader_data_cache=1, api_visible_call_limit=1, sampler_index=1, barrier_count=1,
       cwd_membar_type=nv_gpu.NVC6C0_QMDV03_00_CWD_MEMBAR_TYPE_L1_SYSMEMBAR, constant_buffer_invalidate_0=1, min_sm_config_shared_mem_size=smem_cfg,
       target_sm_config_shared_mem_size=smem_cfg, max_sm_config_shared_mem_size=0x1a,
-      program_prefetch_size=0 if NV_QMD_DISABLE_PREFETCH.value else min(prog_sz>>8, 0x1ff), sass_version=dev.sass_version,
+      program_prefetch_size=0 if NV_QMD_DISABLE_PREFETCH.value else min(prog_sz>>8, 0x1ff),
+      sass_version=nv_qmd_launch_sass_version(dev.sm_version),
       program_prefetch_addr_upper_shifted=prog_addr>>40, program_prefetch_addr_lower_shifted=prog_addr>>8)
 
     for i,(addr,sz) in self.constbufs.items():

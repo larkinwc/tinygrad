@@ -100,6 +100,9 @@ def test_ga100_nvd_uses_sm80_renderer_target():
   assert ops_nv.nv_renderer_arch(0xA04) == "sm_120"
   assert ops_nv.nv_qmd_sass_version(0x802) == 0x82
   assert ops_nv.nv_qmd_sass_version(0x806) == 0x86
+  assert ops_nv.nv_qmd_launch_sass_version(0x802) == 0x82
+  with Context(NV_QMD_SASS_VERSION=0x80):
+    assert ops_nv.nv_qmd_launch_sass_version(0x802) == 0x80
   assert ops_nv.nv_pcas_action(nv_gpu.AMPERE_COMPUTE_A) == \
     nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_INVALIDATE_COPY_SCHEDULE
   assert ops_nv.nv_pcas_action(nv_gpu.AMPERE_COMPUTE_B) == \
