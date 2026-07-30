@@ -22,6 +22,7 @@ nv_gpu = nv_570 # default to 570
 NV_PCI_DEVICES = ((0xff00, (0x2000,0x2200,0x2400,0x2500,0x2600,0x2700,0x2800,0x2b00,0x2c00,0x2d00,0x2f00)),)
 
 PMA = ContextVar("PMA", abs(VIZ.value)>=2)
+NV_CTXSHARE_FLAGS = ContextVar("NV_CTXSHARE_FLAGS", nv_gpu.NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT_ASYNC)
 NV_QMD_CBUF_SHIFTED4 = ContextVar("NV_QMD_CBUF_SHIFTED4", 0)
 NV_QMD_DISABLE_PREFETCH = ContextVar("NV_QMD_DISABLE_PREFETCH", 0)
 NV_QMD_GROUP_ID = ContextVar("NV_QMD_GROUP_ID", 0x3f)
@@ -760,7 +761,7 @@ class NVDevice(HCQCompiled[NVSignal]):
     self.gpfifo_area = self.iface.alloc(0x300000, contiguous=True, cpu_access=True, force_devmem=True,
       map_flags=(nv_gpu.NVOS33_FLAGS_CACHING_TYPE_WRITECOMBINED<<23))
 
-    ctxshare_params = nv_gpu.NV_CTXSHARE_ALLOCATION_PARAMETERS(hVASpace=vaspace, flags=nv_gpu.NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT_ASYNC)
+    ctxshare_params = nv_gpu.NV_CTXSHARE_ALLOCATION_PARAMETERS(hVASpace=vaspace, flags=NV_CTXSHARE_FLAGS.value)
     ctxshare = self.iface.rm_alloc(self.channel_group, nv_gpu.FERMI_CONTEXT_SHARE_A, ctxshare_params)
 
     self._setup_compute_and_dma_gpfifos(ctxshare)
