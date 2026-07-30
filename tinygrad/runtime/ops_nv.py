@@ -30,7 +30,7 @@ NV_QMD_LOCAL_MEMORY_SIZE = ContextVar("NV_QMD_LOCAL_MEMORY_SIZE", 0)
 NV_QMD_LOCAL_MEMORY_LOW_SIZE = ContextVar("NV_QMD_LOCAL_MEMORY_LOW_SIZE", -1)
 NV_QMD_LOCAL_MEMORY_HIGH_SIZE = ContextVar("NV_QMD_LOCAL_MEMORY_HIGH_SIZE", -1)
 NV_QMD_PCAS_ACTION = ContextVar("NV_QMD_PCAS_ACTION", -1)
-NV_QMD_SASS_VERSION = ContextVar("NV_QMD_SASS_VERSION", 0)
+NV_QMD_SASS_VERSION = ContextVar("NV_QMD_SASS_VERSION", -1)
 
 @dataclass(frozen=True)
 class ProfilePMAEvent(ProfileEvent): device:str; kern:str; blob:bytes; exec_tag:int # noqa: E702
@@ -51,7 +51,7 @@ def nv_renderer_arch(sm_version:int) -> str:
 def nv_qmd_sass_version(sm_version:int) -> int:
   return ((sm_version & 0xf00) >> 4) | (sm_version & 0xf)
 def nv_qmd_launch_sass_version(sm_version:int) -> int:
-  return NV_QMD_SASS_VERSION.value or nv_qmd_sass_version(sm_version)
+  return nv_qmd_sass_version(sm_version) if NV_QMD_SASS_VERSION.value < 0 else NV_QMD_SASS_VERSION.value
 
 def nv_qmd_cbuf_size_shifted4(size:int) -> int:
   return round_up(size, 16) >> 4

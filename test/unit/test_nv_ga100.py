@@ -103,6 +103,8 @@ def test_ga100_nvd_uses_sm80_renderer_target():
   assert ops_nv.nv_qmd_launch_sass_version(0x802) == 0x82
   with Context(NV_QMD_SASS_VERSION=0x80):
     assert ops_nv.nv_qmd_launch_sass_version(0x802) == 0x80
+  with Context(NV_QMD_SASS_VERSION=0):
+    assert ops_nv.nv_qmd_launch_sass_version(0x802) == 0
   assert ops_nv.nv_qmd_local_memory_size(0x240) == 0x240
   with Context(NV_QMD_LOCAL_MEMORY_SIZE=0x640):
     assert ops_nv.nv_qmd_local_memory_size(0x240) == 0x640
