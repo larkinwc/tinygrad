@@ -22,6 +22,8 @@ nv_gpu = nv_570 # default to 570
 NV_PCI_DEVICES = ((0xff00, (0x2000,0x2200,0x2400,0x2500,0x2600,0x2700,0x2800,0x2b00,0x2c00,0x2d00,0x2f00)),)
 
 PMA = ContextVar("PMA", abs(VIZ.value)>=2)
+NV_QMD_CBUF_SHIFTED4 = ContextVar("NV_QMD_CBUF_SHIFTED4", 0)
+NV_QMD_DISABLE_PREFETCH = ContextVar("NV_QMD_DISABLE_PREFETCH", 0)
 
 @dataclass(frozen=True)
 class ProfilePMAEvent(ProfileEvent): device:str; kern:str; blob:bytes; exec_tag:int # noqa: E702
@@ -44,6 +46,9 @@ def nv_qmd_sass_version(sm_version:int) -> int:
 
 def nv_qmd_cbuf_size_shifted4(size:int) -> int:
   return round_up(size, 16) >> 4
+
+def nv_qmd_cbuf_size(size:int, shifted4:bool) -> int:
+  return nv_qmd_cbuf_size_shifted4(size) if shifted4 else size
 
 def nv_pcas_action(compute_class:int) -> int:
   # Ampere's documented launch sequence copies and schedules the QMD. GA100 did not complete its first QMD with PREFETCH_SCHEDULE.
@@ -230,8 +235,9 @@ class NVComputeQueue(NVCommandQueue):
   def exec(self, prg:NVProgram, args_state:NVArgsState, global_size:tuple[sint, ...], local_size:tuple[sint, ...]):
     self.bind_args_state(args_state)
 
+    cbuf_shifted4 = bool(NV_QMD_CBUF_SHIFTED4.value)
     cbuf0_size = len(prg.cbuf_0) * 4 + len(args_state.bufs) * 8 + len(args_state.vals) * 4
-    qmd_offset = round_up(cbuf0_size, 1 << 8)
+    qmd_offset = round_up(cbuf0_size if cbuf_shifted4 else prg.constbufs[0][1], 1 << 8)
     if qmd_offset + prg.qmd.mv.nbytes > args_state.buf.size:
       raise RuntimeError(f"NV kernargs exceed allocation: cbuf0={cbuf0_size}, qmd_offset={qmd_offset}, allocation={args_state.buf.size}")
     qmd_buf = args_state.buf.offset(qmd_offset)
@@ -244,7 +250,7 @@ class NVComputeQueue(NVCommandQueue):
     self.bind_sints_to_mem(*(local_size[:2]), mem=qmd_buf.cpu_view(), fmt='H', offset=qmd.field_offset('cta_thread_dimension0'))
     self.bind_sints_to_mem(local_size[2], mem=qmd_buf.cpu_view(), fmt='B', offset=qmd.field_offset('cta_thread_dimension2'))
     qmd.set_constant_buf_addr(0, args_state.buf.va_addr)
-    qmd.write(constant_buffer_size_shifted4_0=nv_qmd_cbuf_size_shifted4(cbuf0_size))
+    if cbuf_shifted4: qmd.write(constant_buffer_size_shifted4_0=nv_qmd_cbuf_size_shifted4(cbuf0_size))
 
     if self.active_qmd is None:
       if prg.dev.pma_enabled: self.nvm(1, nv_gpu.NVC6C0_PM_TRIGGER, 0)
@@ -409,12 +415,14 @@ class NVProgram(HCQProgram['NVDevice']):
     self.qmd:QMD = QMD(dev, **qmd, qmd_group_id=0x3f, invalidate_texture_header_cache=1, invalidate_texture_sampler_cache=1,
       invalidate_texture_data_cache=1, invalidate_shader_data_cache=1, api_visible_call_limit=1, sampler_index=1, barrier_count=1,
       cwd_membar_type=nv_gpu.NVC6C0_QMDV03_00_CWD_MEMBAR_TYPE_L1_SYSMEMBAR, constant_buffer_invalidate_0=1, min_sm_config_shared_mem_size=smem_cfg,
-      target_sm_config_shared_mem_size=smem_cfg, max_sm_config_shared_mem_size=0x1a, program_prefetch_size=min(prog_sz>>8, 0x1ff),
-      sass_version=dev.sass_version, program_prefetch_addr_upper_shifted=prog_addr>>40, program_prefetch_addr_lower_shifted=prog_addr>>8)
+      target_sm_config_shared_mem_size=smem_cfg, max_sm_config_shared_mem_size=0x1a,
+      program_prefetch_size=0 if NV_QMD_DISABLE_PREFETCH.value else min(prog_sz>>8, 0x1ff), sass_version=dev.sass_version,
+      program_prefetch_addr_upper_shifted=prog_addr>>40, program_prefetch_addr_lower_shifted=prog_addr>>8)
 
     for i,(addr,sz) in self.constbufs.items():
       self.qmd.set_constant_buf_addr(i, addr)
-      self.qmd.write(**{f'constant_buffer_size_shifted4_{i}': nv_qmd_cbuf_size_shifted4(sz), f'constant_buffer_valid_{i}': 1})
+      self.qmd.write(**{f'constant_buffer_size_shifted4_{i}': nv_qmd_cbuf_size(sz, bool(NV_QMD_CBUF_SHIFTED4.value)),
+                        f'constant_buffer_valid_{i}': 1})
 
     # Registers allocation granularity per warp is 256, warp allocation granularity is 4. Register file size is 65536.
     self.max_threads = ((65536 // round_up(max(1, self.regs_usage) * 32, 256)) // 4) * 4 * 32

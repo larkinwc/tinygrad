@@ -109,6 +109,8 @@ def test_qmd_constant_buffer_size_uses_shifted4_units():
   assert ops_nv.nv_qmd_cbuf_size_shifted4(0x170) == 0x17
   assert ops_nv.nv_qmd_cbuf_size_shifted4(0x171) == 0x18
   assert ops_nv.nv_qmd_cbuf_size_shifted4(0x170 + 3 * 8) == 0x19
+  assert ops_nv.nv_qmd_cbuf_size(0x170, shifted4=False) == 0x170
+  assert ops_nv.nv_qmd_cbuf_size(0x170, shifted4=True) == 0x17
 
 
 def test_program_snapshot_reports_copied_back_resident_image():
