@@ -42,6 +42,9 @@ def nv_renderer_arch(sm_version:int) -> str:
 def nv_qmd_sass_version(sm_version:int) -> int:
   return ((sm_version & 0xf00) >> 4) | (sm_version & 0xf)
 
+def nv_qmd_cbuf_size_shifted4(size:int) -> int:
+  return round_up(size, 16) >> 4
+
 def nv_pcas_action(compute_class:int) -> int:
   # Ampere's documented launch sequence copies and schedules the QMD. GA100 did not complete its first QMD with PREFETCH_SCHEDULE.
   if compute_class == nv_gpu.AMPERE_COMPUTE_A: return nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_INVALIDATE_COPY_SCHEDULE
@@ -227,7 +230,11 @@ class NVComputeQueue(NVCommandQueue):
   def exec(self, prg:NVProgram, args_state:NVArgsState, global_size:tuple[sint, ...], local_size:tuple[sint, ...]):
     self.bind_args_state(args_state)
 
-    qmd_buf = args_state.buf.offset(round_up(prg.constbufs[0][1], 1 << 8))
+    cbuf0_size = len(prg.cbuf_0) * 4 + len(args_state.bufs) * 8 + len(args_state.vals) * 4
+    qmd_offset = round_up(cbuf0_size, 1 << 8)
+    if qmd_offset + prg.qmd.mv.nbytes > args_state.buf.size:
+      raise RuntimeError(f"NV kernargs exceed allocation: cbuf0={cbuf0_size}, qmd_offset={qmd_offset}, allocation={args_state.buf.size}")
+    qmd_buf = args_state.buf.offset(qmd_offset)
     qmd_buf.cpu_view().view(size=prg.qmd.mv.nbytes, fmt='B')[:] = prg.qmd.mv
     assert qmd_buf.va_addr < (1 << 40), f"large qmd addr {qmd_buf.va_addr:x}"
 
@@ -237,6 +244,7 @@ class NVComputeQueue(NVCommandQueue):
     self.bind_sints_to_mem(*(local_size[:2]), mem=qmd_buf.cpu_view(), fmt='H', offset=qmd.field_offset('cta_thread_dimension0'))
     self.bind_sints_to_mem(local_size[2], mem=qmd_buf.cpu_view(), fmt='B', offset=qmd.field_offset('cta_thread_dimension2'))
     qmd.set_constant_buf_addr(0, args_state.buf.va_addr)
+    qmd.write(constant_buffer_size_shifted4_0=nv_qmd_cbuf_size_shifted4(cbuf0_size))
 
     if self.active_qmd is None:
       if prg.dev.pma_enabled: self.nvm(1, nv_gpu.NVC6C0_PM_TRIGGER, 0)
@@ -406,7 +414,7 @@ class NVProgram(HCQProgram['NVDevice']):
 
     for i,(addr,sz) in self.constbufs.items():
       self.qmd.set_constant_buf_addr(i, addr)
-      self.qmd.write(**{f'constant_buffer_size_shifted4_{i}': sz, f'constant_buffer_valid_{i}': 1})
+      self.qmd.write(**{f'constant_buffer_size_shifted4_{i}': nv_qmd_cbuf_size_shifted4(sz), f'constant_buffer_valid_{i}': 1})
 
     # Registers allocation granularity per warp is 256, warp allocation granularity is 4. Register file size is 65536.
     self.max_threads = ((65536 // round_up(max(1, self.regs_usage) * 32, 256)) // 4) * 4 * 32

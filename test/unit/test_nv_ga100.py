@@ -105,6 +105,12 @@ def test_ga100_nvd_uses_sm80_renderer_target():
     nv_gpu.NVC6C0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE
 
 
+def test_qmd_constant_buffer_size_uses_shifted4_units():
+  assert ops_nv.nv_qmd_cbuf_size_shifted4(0x170) == 0x17
+  assert ops_nv.nv_qmd_cbuf_size_shifted4(0x171) == 0x18
+  assert ops_nv.nv_qmd_cbuf_size_shifted4(0x170 + 3 * 8) == 0x19
+
+
 def test_program_snapshot_reports_copied_back_resident_image():
   program = bytes(range(0x80))
   mapping = SimpleNamespace(aspace=ops_nv.AddrSpace.PHYS)
