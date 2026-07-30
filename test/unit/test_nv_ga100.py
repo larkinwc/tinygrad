@@ -120,6 +120,16 @@ def test_program_snapshot_reports_copied_back_resident_image():
   assert snapshot["resident"] == program.hex()
   assert snapshot["resident_sha256"] == snapshot["expected_sha256"]
 
+def test_slm_snapshot_exposes_active_and_max_topology_sizes():
+  snapshot = ops_nv.nv_slm_snapshot(required=0x240, max_warps_per_sm=64, num_sm_per_tpc=2, num_gpcs=8, num_tpc_per_gpc=8,
+                                    tpc_masks=[0x3, 0x3, 0, 0x3, 0x7, 0, 0x7, 0])
+
+  assert snapshot == {
+    "required_per_thread": 0x240, "allocated_per_thread": 0x240, "bytes_per_warp": 0x4800, "bytes_per_tpc": 0x240000,
+    "num_gpcs": 8, "num_tpc_per_gpc": 8, "max_tpc_count": 64, "tpc_masks": [0x3, 0x3, 0, 0x3, 0x7, 0, 0x7, 0],
+    "active_tpc_count": 12, "allocation_size": 0x9000000, "active_allocation_size": 0x1B00000,
+  }
+
 def test_qmd_snapshot_captures_launch_and_release_contract():
   dev = SimpleNamespace(iface=SimpleNamespace(compute_class=nv_gpu.AMPERE_COMPUTE_A))
   qmd = ops_nv.QMD(dev, qmd_major_version=3, sass_version=0x82, program_address_upper=0x10,

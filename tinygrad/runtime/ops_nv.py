@@ -67,6 +67,19 @@ def nv_program_snapshot(prg) -> dict[str, int|str|bool]:
   return snapshot | {"resident_status": "match" if resident == expected else "mismatch",
                      "resident_sha256": hashlib.sha256(resident).hexdigest(), "resident": resident.hex()}
 
+def nv_slm_snapshot(required:int, max_warps_per_sm:int, num_sm_per_tpc:int, num_gpcs:int, num_tpc_per_gpc:int,
+                    tpc_masks:list[int]|None=None) -> dict[str, int|list[int]|None]:
+  slm_per_thread = round_up(required, 32)
+  bytes_per_warp = round_up(slm_per_thread * 32, 0x200)
+  bytes_per_tpc = round_up(bytes_per_warp * max_warps_per_sm * num_sm_per_tpc, 0x8000)
+  max_tpc_count = num_gpcs * num_tpc_per_gpc
+  active_tpc_count = None if tpc_masks is None else sum(mask.bit_count() for mask in tpc_masks)
+  return {"required_per_thread": required, "allocated_per_thread": slm_per_thread, "bytes_per_warp": bytes_per_warp,
+          "bytes_per_tpc": bytes_per_tpc, "num_gpcs": num_gpcs, "num_tpc_per_gpc": num_tpc_per_gpc,
+          "max_tpc_count": max_tpc_count, "tpc_masks": tpc_masks, "active_tpc_count": active_tpc_count,
+          "allocation_size": round_up(bytes_per_tpc * max_tpc_count, 0x20000),
+          "active_allocation_size": None if active_tpc_count is None else round_up(bytes_per_tpc * active_tpc_count, 0x20000)}
+
 def nv_iowr(fd:FileIOInterface, nr, args, cmd=None):
   ret = fd.ioctl(cmd or ((3 << 30) | (ctypes.sizeof(args) & 0x1FFF) << 16 | (ord('F') & 0xFF) << 8 | (nr & 0xFF)), args)
   if ret != 0: raise RuntimeError(f"ioctl returned {ret}")
@@ -720,6 +733,9 @@ class NVDevice(HCQCompiled[NVSignal]):
 
     self.num_gpcs, self.num_tpc_per_gpc, self.num_sm_per_tpc, self.max_warps_per_sm, self.sm_version = self._query_gpu_info('num_gpcs',
       'num_tpc_per_gpc', 'num_sm_per_tpc', 'max_warps_per_sm', 'sm_version')
+    self.tpc_masks = None if not self.copy_on_compute_queue else [
+      int(self.iface.rm_control(self.subdevice, nv_gpu.NV2080_CTRL_CMD_GR_GET_TPC_MASK,
+                               nv_gpu.NV2080_CTRL_GR_GET_TPC_MASK_PARAMS(gpcId=i)).tpcMask) for i in range(self.num_gpcs)]
 
     self.arch = nv_renderer_arch(self.sm_version)
     self.sass_version = nv_qmd_sass_version(self.sm_version)
@@ -817,12 +833,16 @@ class NVDevice(HCQCompiled[NVSignal]):
   def _ensure_has_local_memory(self, required):
     if self.slm_per_thread >= required: return
 
-    self.slm_per_thread, old_slm_per_thread = round_up(required, 32), self.slm_per_thread
-    bytes_per_tpc = round_up(round_up(self.slm_per_thread * 32, 0x200) * self.max_warps_per_sm * self.num_sm_per_tpc, 0x8000)
-    self.shader_local_mem, ok = self._realloc(self.shader_local_mem, round_up(bytes_per_tpc*self.num_tpc_per_gpc*self.num_gpcs, 0x20000))
+    requested_layout = nv_slm_snapshot(required, self.max_warps_per_sm, self.num_sm_per_tpc, self.num_gpcs,
+                                       self.num_tpc_per_gpc, self.tpc_masks)
+    self.slm_per_thread, old_slm_per_thread = int(requested_layout["allocated_per_thread"]), self.slm_per_thread
+    bytes_per_tpc = int(requested_layout["bytes_per_tpc"])
+    self.shader_local_mem, ok = self._realloc(self.shader_local_mem, int(requested_layout["allocation_size"]))
 
     # Realloc failed, restore the old value.
     if not ok: self.slm_per_thread = old_slm_per_thread
+    self.local_memory_snapshot = requested_layout | {"allocation_succeeded": ok, "buffer_size": self.shader_local_mem.size,
+                                                     "active_per_thread": self.slm_per_thread}
 
     cast(NVComputeQueue, NVComputeQueue().wait(self.timeline_signal, self.timeline_value - 1)) \
                                          .setup(local_mem=self.shader_local_mem.va_addr, local_mem_tpc_bytes=bytes_per_tpc) \
@@ -863,6 +883,7 @@ class NVDevice(HCQCompiled[NVSignal]):
 
     report, seen_gpfifos = [f"setup_stage={getattr(self, 'ga100_setup_stage', 'unknown')} arch={self.arch} "
                             f"sm_version=0x{self.sm_version:X} sass_version=0x{self.sass_version:X}"], set()
+    report.append(f"local memory: {getattr(self, 'local_memory_snapshot', None)!r}")
     for name in ("compute_gpfifo", "dma_gpfifo"):
       if not hasattr(self, name) or id(gpfifo:=getattr(self, name)) in seen_gpfifos: continue
       seen_gpfifos.add(id(gpfifo))
